@@ -90,7 +90,7 @@
 
 ### 安装
 
-1. 下载 `飞牛AT力场_<版本>.fpk`。
+1. 到 [Releases](https://github.com/IMGZCQ/AT-Field/releases) 下载最新版的 `AT-ForceField_<版本>.fpk`（每个版本都附完整更新说明与 SHA256）。
 2. 在飞牛应用中心「手动安装」选择该文件，等待安装完成。
 3. 从应用中心打开「飞牛AT力场」。
 
@@ -122,6 +122,19 @@ build.bat
 - `AT-ForceField.fpk`（纯 ASCII 文件名，脚本 / 镜像站用）
 
 非 Windows 环境可手动执行等价步骤：`npm install && npm run build`（`code/frontend`）→ `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.Version=<版本>" -o src/at-forcefield-linux-amd64 ./cmd/server`（`code`，arm64 同理）→ 按 `build.bat` 中的目录结构打包 FPK。
+
+### 发布新版本
+
+改完代码后按顺序执行，Release 与更新说明会自动同步：
+
+1. 把 `fpk/manifest` 的 `version` 加 `0.0.1`，并在 `changelog=` 最前面加上本版 `•` 条目。
+2. `build.bat` 构建 FPK。
+3. `powershell -ExecutionPolicy Bypass -File .\release.ps1 -Push`
+   - 推送当前分支到 `origin`
+   - 按 `version` 创建 / 更新 tag `v<版本>` 与 GitHub Release，说明取自 `changelog`
+   - 上传 `AT-ForceField_<版本>.fpk` 并写入 SHA256
+
+脚本可重复执行：同一版本再次运行只会更新说明与附件，不会产生重复 Release。
 
 ---
 
@@ -173,6 +186,7 @@ AT-Field/
 ├─ assets/                界面设计素材
 ├─ docs/screenshots/      README 截图
 ├─ build.bat              一键构建脚本
+├─ release.ps1            发布脚本（推送 + 同步 GitHub Release）
 └─ .gitignore
 ```
 
