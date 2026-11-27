@@ -26,10 +26,14 @@ const (
 	maxIPsPerHour = 400
 	// maxPathsPerHour 单小时最多保留的路径数
 	maxPathsPerHour = 200
-	readChunk       = 2 << 20 // 单次最多读取 2MB，避免大日志阻塞采集循环
-	pollEvery       = 5 * time.Second
-	saveEvery       = 20 * time.Second
-	pendingLimit    = 64 << 10
+	// maxIPsPerPath 单小时每条路径最多保留的来源 IP 数
+	maxIPsPerPath = 10
+	// PathIPRetentionDays 路径-来源 IP 关联的保留天数（比整体聚合短，控制磁盘占用）
+	PathIPRetentionDays = 7
+	readChunk           = 2 << 20 // 单次最多读取 2MB，避免大日志阻塞采集循环
+	pollEvery           = 5 * time.Second
+	saveEvery           = 20 * time.Second
+	pendingLimit        = 64 << 10
 
 	// 内存中的近期异常窗口：用于「扫描防护」自动封禁，不落盘
 	recentBadWindow   = 10 * time.Minute
@@ -129,6 +133,23 @@ type StatusCount struct {
 	Count int    `json:"count"`
 }
 
+// pathHour 单小时「路径 → 来源 IP」计数，落盘为单独的 p-*.json 文件，
+// 只保留 PathIPRetentionDays 天，避免交叉统计占用过多磁盘。
+type pathHour struct {
+	Hour int64                     `json:"hour"`
+	IPs  map[string]map[string]int `json:"ips"`
+}
+
+// SourceQuery 某条路径在指定窗口内的来源 IP
+type SourceQuery struct {
+	Path    string    `json:"path"`
+	From    int64     `json:"from"`
+	To      int64     `json:"to"`
+	Covered int       `json:"covered"` // 已记录来源的请求数合计（只含 Top IP，故可能小于路径总次数）
+	Partial bool      `json:"partial"` // 窗口超过 7 天时只统计最近 7 天
+	IPs     []IPCount `json:"ips"`
+}
+
 // Query 一次访问分析的聚合结果
 type Query struct {
 	Available bool          `json:"available"` // 是否找到可读的访问日志
@@ -162,7 +183,8 @@ type Collector struct {
 	pending   string
 	hour      int64
 	bucket    *hourBucket
-	recentBad map[string][]int64 // 近期异常请求时间戳（按 IP），仅内存
+	pathIPs   map[string]map[string]int // 当前小时的「路径 → 来源 IP」计数，按小时滚动
+	recentBad map[string][]int64        // 近期异常请求时间戳（按 IP），仅内存
 	dirty     bool
 	lastErr   string
 	lastEvt   int64
@@ -192,6 +214,7 @@ func Open(dataDir, basePath string) (*Collector, error) {
 		done:      make(chan struct{}),
 	}
 	c.bucket = c.loadHour(c.hour)
+	c.pathIPs = c.loadPathHour(c.hour)
 	c.discover()
 	// 从文件末尾开始，避免重启后把历史日志重复计入
 	if c.logPath != "" {
@@ -373,12 +396,15 @@ func (c *Collector) addLineLocked(line string) {
 		c.saveLocked()
 		c.hour = hour
 		c.bucket = c.loadHour(hour)
+		c.pathIPs = c.loadPathHour(hour)
+		c.prune()
 	}
 	b := c.bucket
 	b.Total++
 	b.Slots[ts.Minute()/10]++
 	b.IPs[ip]++
 	b.Paths[path]++
+	c.addPathIPLocked(path, ip)
 	b.Statuses[m[4]]++
 	if m[4][0] == '4' || m[4][0] == '5' {
 		b.Bad[ts.Minute()/10]++
@@ -386,6 +412,65 @@ func (c *Collector) addLineLocked(line string) {
 		c.noteBadLocked(ip, ts.Unix())
 	}
 	c.lastEvt = ts.Unix()
+}
+
+// addPathIPLocked 记录「路径 → 来源 IP」关联。为防被扫时无限膨胀，
+// 路径数与每条路径的 IP 数都有上限，超出时保留访问量最高的部分。
+func (c *Collector) addPathIPLocked(path, ip string) {
+	if c.pathIPs == nil {
+		c.pathIPs = map[string]map[string]int{}
+	}
+	m := c.pathIPs[path]
+	if m == nil {
+		if len(c.pathIPs) >= maxPathsPerHour {
+			return
+		}
+		m = map[string]int{}
+		c.pathIPs[path] = m
+	}
+	m[ip]++
+	if len(m) > maxIPsPerPath*2 {
+		c.pathIPs[path] = topN(m, maxIPsPerPath)
+	}
+}
+
+func (c *Collector) pathIPFile(hour int64) string {
+	return filepath.Join(c.dir, "p-"+time.Unix(hour, 0).Format("20060102-15")+".json")
+}
+
+// savePathIPsLocked 把当前小时的路径-来源 IP 关联写入磁盘
+func (c *Collector) savePathIPsLocked() {
+	if len(c.pathIPs) == 0 {
+		return
+	}
+	pruned := make(map[string]map[string]int, len(c.pathIPs))
+	for p, m := range c.pathIPs {
+		pruned[p] = topN(m, maxIPsPerPath)
+	}
+	raw, err := json.Marshal(pathHour{Hour: c.hour, IPs: pruned})
+	if err != nil {
+		return
+	}
+	p := c.pathIPFile(c.hour)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+func (c *Collector) loadPathHour(hour int64) map[string]map[string]int {
+	raw, err := os.ReadFile(c.pathIPFile(hour))
+	if err != nil {
+		return nil
+	}
+	var ph pathHour
+	if err := json.Unmarshal(raw, &ph); err != nil {
+		return nil
+	}
+	return ph.IPs
 }
 
 // noteBadLocked 记录一次异常请求时间戳（供扫描防护使用）。
@@ -521,6 +606,7 @@ func (c *Collector) saveLocked() {
 	c.bucket.IPs = topN(c.bucket.IPs, maxIPsPerHour)
 	c.bucket.IPBad = topN(c.bucket.IPBad, maxIPsPerHour)
 	c.bucket.Paths = topN(c.bucket.Paths, maxPathsPerHour)
+	c.savePathIPsLocked()
 	raw, err := json.Marshal(c.bucket)
 	if err != nil {
 		return
@@ -563,19 +649,29 @@ func (c *Collector) loadHour(hour int64) *hourBucket {
 	return &b
 }
 
-// prune 删除超过保留期的聚合文件
+// prune 删除超过保留期的聚合文件：h-* 保留 RetentionDays 天，p-*（路径-来源关联）保留 PathIPRetentionDays 天
 func (c *Collector) prune() {
 	entries, err := os.ReadDir(c.dir)
 	if err != nil {
 		return
 	}
 	cutoff := time.Now().AddDate(0, 0, -RetentionDays)
+	pathCutoff := time.Now().AddDate(0, 0, -PathIPRetentionDays)
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), "h-") {
+		if e.IsDir() {
+			continue
+		}
+		var cut time.Time
+		switch {
+		case strings.HasPrefix(e.Name(), "h-"):
+			cut = cutoff
+		case strings.HasPrefix(e.Name(), "p-"):
+			cut = pathCutoff
+		default:
 			continue
 		}
 		info, err := e.Info()
-		if err != nil || info.ModTime().After(cutoff) {
+		if err != nil || info.ModTime().After(cut) {
 			continue
 		}
 		_ = os.Remove(filepath.Join(c.dir, e.Name()))
@@ -586,18 +682,7 @@ func (c *Collector) prune() {
 // 统计窗口按整点（7 天 / 30 天按整天）对齐，保证聚合文件与总量一致。
 func (c *Collector) Query(rangeKey string) Query {
 	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	var from time.Time
-	switch rangeKey {
-	case "1h":
-		from = now.Truncate(time.Hour)
-	case "7d":
-		from = today.AddDate(0, 0, -6)
-	case "30d":
-		from = today.AddDate(0, 0, -(RetentionDays - 1))
-	default:
-		from = now.Truncate(time.Hour).Add(-23 * time.Hour)
-	}
+	from := rangeFrom(rangeKey, now)
 
 	c.mu.Lock()
 	q := Query{
@@ -744,6 +829,64 @@ func (c *Collector) Query(rangeKey string) Query {
 		q.Points = []Point{}
 	}
 	return q
+}
+
+// rangeFrom 计算统计窗口起点：与前端时限一致，按整点 / 整天对齐
+func rangeFrom(rangeKey string, now time.Time) time.Time {
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	switch rangeKey {
+	case "1h":
+		return now.Truncate(time.Hour)
+	case "7d":
+		return today.AddDate(0, 0, -6)
+	case "30d":
+		return today.AddDate(0, 0, -(RetentionDays - 1))
+	default:
+		return now.Truncate(time.Hour).Add(-23 * time.Hour)
+	}
+}
+
+// PathSources 返回指定窗口内某条路径的来源 IP Top N。
+// 路径-IP 关联只保留 PathIPRetentionDays 天，窗口更长时只统计最近 7 天（Partial=true）。
+func (c *Collector) PathSources(path, rangeKey string, n int) SourceQuery {
+	now := time.Now()
+	from := rangeFrom(rangeKey, now)
+	cut := now.AddDate(0, 0, -PathIPRetentionDays)
+	partial := from.Before(cut)
+	if partial {
+		from = cut
+	}
+	if n <= 0 {
+		n = 5
+	}
+
+	c.mu.Lock()
+	curHour := c.hour
+	cur := c.pathIPs
+	c.mu.Unlock()
+
+	counts := map[string]int{}
+	covered := 0
+	for h := from.Truncate(time.Hour).Unix(); h <= now.Truncate(time.Hour).Unix(); h += int64(time.Hour / time.Second) {
+		var m map[string]int
+		if h == curHour {
+			m = cur[path]
+		} else {
+			m = c.loadPathHour(h)[path]
+		}
+		for ip, v := range m {
+			counts[ip] += v
+			covered += v
+		}
+	}
+	return SourceQuery{
+		Path:    path,
+		From:    from.Unix(),
+		To:      now.Unix(),
+		Covered: covered,
+		Partial: partial,
+		IPs:     topIPs(counts, n),
+	}
 }
 
 // badOf 统计一个小时内 4xx / 5xx 请求数（由状态码分布推导，兼容旧版聚合文件）

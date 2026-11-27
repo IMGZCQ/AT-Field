@@ -92,6 +92,16 @@ body {
   box-shadow: inset 0 0 0 1px rgba(160, 150, 255, 0.42);
 }
 .nav-bottom { margin-top: auto; position: relative; }
+.nav-ver {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.nav-on .nav-ver { color: rgba(236, 233, 255, 0.66); }
 .nav-bottom::before {
   content: '';
   position: absolute;
@@ -947,6 +957,38 @@ body {
 .conn-row:hover { background: rgba(139, 107, 255, 0.1); border-radius: 8px; }
 .conn-row > span { min-width: 0; }
 .conn-pid { margin-left: 4px; font-style: normal; font-size: 11px; color: var(--text-faint); }
+
+/* ---------- 进程流量明细 ---------- */
+.head-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.proc-dialog { max-width: 620px; }
+.proc-dialog .conn-tools { flex-wrap: wrap; row-gap: 4px; }
+.proc-dialog .conn-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) 78px 78px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  font-size: 12.5px;
+}
+.proc-head-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--text-faint);
+  font-size: 12px;
+  background: rgba(20, 12, 55, 0.94);
+  border-bottom: 1px solid rgba(139, 107, 255, 0.16);
+}
+.proc-row { color: var(--text-dim); border-bottom: 1px solid rgba(139, 107, 255, 0.08); }
+.proc-row:hover { background: rgba(139, 107, 255, 0.1); border-radius: 8px; }
+.proc-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.proc-share { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.proc-share i { flex: 1 1 auto; min-width: 0; height: 6px; border-radius: 3px; background: linear-gradient(90deg, #8b6bff, #43e7ad); }
+.proc-share em { flex: none; width: 30px; text-align: right; font-style: normal; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) {
+  .proc-grid { grid-template-columns: minmax(0, 1.2fr) 66px 66px 74px; font-size: 12px; padding: 7px 6px; }
+}
 /* 受保护（本应用自身端口）的连接不提供按钮，只留一行说明文字占位，宽度与按钮一致 */
 .conn-lock {
   display: inline-flex;
@@ -1120,6 +1162,11 @@ body {
 .geo-cell { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .btn-mini { padding: 3px 10px; font-size: 12px; border-radius: 8px; flex: none; }
 .geo-text { color: var(--text-dim); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 归属地只到注册机构级时的提示标签 */
+.geo-warn {
+  margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 11px; font-style: normal;
+  color: #ffc46b; background: rgba(240, 196, 98, 0.13); border: 1px solid rgba(240, 196, 98, 0.35);
+}
 /* 连接 Top 来源行里限制归属地文本宽度，避免点开查询后把整行撑开（完整内容看行明细） */
 .net-head .geo-text { max-width: 300px; }
 .banned-block { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; font-size: 12.5px; }
@@ -1319,8 +1366,11 @@ html.is-hidden .live-dot {
 .ref-label { fill: rgba(236, 233, 255, 0.42); font-size: 11px; font-weight: 600; }
 
 /* ---------- 健康分档环形图 ---------- */
-.donut-wrap { display: flex; align-items: center; gap: 22px; padding: 2px 4px 4px; }
-.donut-figure { position: relative; width: 168px; height: 168px; flex: none; }
+/* 尺寸统一用 em 表达，只有 .donut-wrap 的 font-size 一处控制整体大小：
+   桌面双栏时由面板高度（cqh）换算，移动端 / 放大弹层用固定基准 */
+.donut-wrap { display: flex; align-items: center; gap: 1.3em; padding: 2px 4px 4px; font-size: 17px; }
+.donut-chart { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.16em; flex: none; }
+.donut-figure { position: relative; width: 9.6em; height: 9.6em; flex: none; }
 .donut { width: 100%; height: 100%; display: block; }
 .donut-center {
   position: absolute;
@@ -1332,34 +1382,52 @@ html.is-hidden .live-dot {
   gap: 3px;
   pointer-events: none;
 }
-.donut-center b { font-size: 30px; font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
-.donut-center b span { font-size: 15px; font-weight: 600; color: var(--text-dim); margin-left: 1px; }
-.donut-center em { font-style: normal; font-size: 11px; color: var(--text-faint); }
-.donut-legend { display: flex; flex-direction: column; gap: 9px; flex: 1; min-width: 0; }
-.donut-legend > span { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-dim); }
-.donut-legend i { width: 8px; height: 8px; border-radius: 3px; flex: none; }
-.donut-legend b { color: var(--text); font-size: 13.5px; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+.donut-center b { font-size: 1.33em; font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.donut-center b span { font-size: 0.62em; font-weight: 600; color: var(--text-dim); margin-left: 1px; }
+.donut-caption { font-style: normal; font-size: 0.7em; color: var(--text-faint); white-space: nowrap; }
+.donut-legend { display: flex; flex-direction: column; gap: 0.53em; flex: 1; min-width: 0; }
+.donut-legend > span { display: flex; align-items: center; gap: 0.41em; font-size: 0.765em; color: var(--text-dim); }
+.donut-legend i { width: 0.47em; height: 0.47em; border-radius: 0.18em; flex: none; }
+.donut-legend b { color: var(--text); font-size: 0.79em; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
 .donut-legend .donut-name {
   flex: 1;
   min-width: 0;
   font-style: normal;
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: 0.765em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 桌面双栏：面板被同行趋势图拉到固定高度，环与文字按面板高度整体缩放填充，
+   用容器查询单位避免内容反过来撑高整行 */
+@media (min-width: 1021px) {
+  .two-col.even > .panel.baseline-panel {
+    display: flex;
+    flex-direction: column;
+    container-type: size;
+  }
+  .two-col.even > .panel.baseline-panel .donut-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    font-size: clamp(15px, min(7.6cqh, 5.4cqw), 22px);
+  }
+}
 /* 放大弹层里环形图更大 */
 .zoom-body .donut-wrap { justify-content: center; gap: 36px; padding: 10px 0; }
 .zoom-body .donut-figure { width: 260px; height: 260px; }
-.zoom-body .donut-center b { font-size: 46px; }
-.zoom-body .donut-center em { font-size: 13px; }
+.zoom-body .donut-chart { gap: 8px; }
+.zoom-body .donut-center b { font-size: 42px; }
+.zoom-body .donut-caption { font-size: 13px; }
 .zoom-body .donut-legend { flex: 0 0 auto; min-width: 190px; }
 .zoom-body .donut-legend > span { font-size: 14.5px; gap: 9px; }
+.zoom-body .donut-legend i { width: 9px; height: 9px; border-radius: 3px; }
+.zoom-body .donut-legend b { font-size: 14.5px; }
+.zoom-body .donut-legend .donut-name { font-size: 14.5px; }
 @media (max-width: 560px) {
   .donut-wrap { gap: 14px; }
   .donut-figure { width: 146px; height: 146px; }
-  .donut-center b { font-size: 26px; }
+  .donut-center b { font-size: 22px; }
   .zoom-body .donut-figure { width: 200px; height: 200px; }
   /* 手机上放大层改为上下排列，200px 圆环 + 图例竖排不挤在一行 */
   .zoom-body .donut-wrap { flex-direction: column; gap: 14px; }
@@ -1447,6 +1515,7 @@ html.is-hidden .live-dot {
   .brand { display: none; }
   .nav-bottom { margin: 0; }
   .nav-bottom::before { display: none; }
+  .nav-ver { display: none; }
   .nav-item {
     flex: none;
     height: 40px;
@@ -1698,6 +1767,25 @@ html.is-hidden .live-dot {
 }
 /* 路径是连续长串，必须允许收缩并省略，否则会把面板撑宽 */
 .web-path-top .mono { flex: 1; min-width: 0; }
+.path-name { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+.web-path-top.ip-click { padding: 4px 6px; margin: -4px -6px 5px; border-radius: 8px; }
+.web-path-top.ip-click:hover, .web-path.open .web-path-top.ip-click { background: rgba(139, 107, 255, 0.08); }
+.web-path.open .net-caret { transform: rotate(90deg); }
+/* 路径来源 IP 明细：沿用列表风格，三列可收缩 */
+.path-src {
+  margin: 0 0 2px; padding: 8px 10px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(139, 107, 255, 0.14);
+  font-size: 12px;
+}
+.src-grid {
+  display: grid; grid-template-columns: minmax(0, 1.1fr) 52px minmax(0, 0.9fr);
+  gap: 8px; align-items: center;
+}
+.src-head { color: var(--text-faint); padding-bottom: 4px; }
+.src-row { padding: 4px 0; border-top: 1px solid rgba(139, 107, 255, 0.08); }
+.src-num { color: var(--text-dim); }
+.src-hint { color: var(--text-faint); }
+.src-foot { color: var(--text-faint); margin-top: 6px; line-height: 1.5; }
 .web-path-count { color: var(--text-dim); flex: none; }
 .web-bar { height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
 .web-bar i {

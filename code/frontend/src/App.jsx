@@ -217,31 +217,33 @@ const BaselineDonut = React.memo(function BaselineDonut({ items = [] }) {
   let acc = 0
   return (
     <div className="donut-wrap">
-      <div className="donut-figure">
-        <svg viewBox="0 0 200 200" className="donut" role="img" aria-label="安全基线得分构成">
-          <circle cx="100" cy="100" r="70" fill="none" stroke="rgba(180,189,255,0.12)" strokeWidth="22" />
-          {list.map((it, i) => {
-            const val = Math.min(Number(it.score), Number(it.max))
-            const len = (val / total) * C
-            const draw = Math.max(0, len - 1.5)
-            const seg = draw > 0 ? (
-              <circle
-                key={it.name}
-                cx="100" cy="100" r="70" fill="none"
-                stroke={BASELINE_COLORS[i % BASELINE_COLORS.length]} strokeWidth="22"
-                strokeDasharray={`${draw} ${C - draw}`}
-                strokeDashoffset={-acc}
-                transform="rotate(-90 100 100)"
-              />
-            ) : null
-            acc += len
-            return seg
-          })}
-        </svg>
-        <div className="donut-center">
-          <b>{earned}<span> / {total}</span></b>
-          <em>安全基线 · 扣分 {total - earned}</em>
+      <div className="donut-chart">
+        <div className="donut-figure">
+          <svg viewBox="0 0 200 200" className="donut" role="img" aria-label="安全基线得分构成">
+            <circle cx="100" cy="100" r="70" fill="none" stroke="rgba(180,189,255,0.12)" strokeWidth="22" />
+            {list.map((it, i) => {
+              const val = Math.min(Number(it.score), Number(it.max))
+              const len = (val / total) * C
+              const draw = Math.max(0, len - 1.5)
+              const seg = draw > 0 ? (
+                <circle
+                  key={it.name}
+                  cx="100" cy="100" r="70" fill="none"
+                  stroke={BASELINE_COLORS[i % BASELINE_COLORS.length]} strokeWidth="22"
+                  strokeDasharray={`${draw} ${C - draw}`}
+                  strokeDashoffset={-acc}
+                  transform="rotate(-90 100 100)"
+                />
+              ) : null
+              acc += len
+              return seg
+            })}
+          </svg>
+          <div className="donut-center">
+            <b>{earned}<span> / {total}</span></b>
+          </div>
         </div>
+        <em className="donut-caption">安全基线 · 扣分 {total - earned}</em>
       </div>
       <div className="donut-legend">
         {list.map((it, i) => (
@@ -337,6 +339,21 @@ const SegTabs = ({ value, onChange, items }) => (
 /* ---------- 封禁时长选择 ---------- */
 const BAN_DURS = [['1h', '1小时'], ['24h', '24小时'], ['7d', '一周'], ['365d', '一年']]
 const banDurLabel = (v) => (BAN_DURS.find(([k]) => k === v) || BAN_DURS[0])[1]
+
+/* ---------- IP 归属地展示 ---------- */
+// approx：第三方库只查到注册机构级数据（常见于中国 IPv6），省/市是机构地址，不代表实际位置
+const GEO_APPROX_NOTE = '注册机构地址，可能不准'
+const geoRegionText = (i = {}) => {
+  if (i.private) return i.country || '内网/保留地址'
+  if (i.approx) return i.country || '未知'
+  return [i.country, i.region, i.city].filter(Boolean).join(' · ') || '未知'
+}
+const geoLabelText = (i = {}, withNote = true) => {
+  const internal = i.private || i.internal
+  const base = internal ? i.country || '内网/保留地址' : geoRegionText(i)
+  const op = i.isp ? ` · ${i.isp}` : ''
+  return `${base}${op}${withNote && i.approx && !internal ? `（${GEO_APPROX_NOTE}）` : ''}`
+}
 
 /* ---------- 双线网络速率图 ---------- */
 const NetChart = React.memo(function NetChart({ points, range = '1d', height = 210 }) {
@@ -980,6 +997,21 @@ const statusTone = (code) => {
 function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [], onBanScans, scanActing, scanMsg }) {
   const [open, setOpen] = useState('')
   const [zoom, setZoom] = useState('')
+  // 被访问路径：点击某条路径展开其来源 IP（路径-来源关联只保留最近 7 天）
+  const [openPath, setOpenPath] = useState('')
+  const [pathSrc, setPathSrc] = useState({ path: '', loading: false, data: null, err: '' })
+  useEffect(() => { setOpenPath('') }, [range])
+  const togglePath = (path) => {
+    if (openPath === path) {
+      setOpenPath('')
+      return
+    }
+    setOpenPath(path)
+    setPathSrc({ path, loading: true, data: null, err: '' })
+    api.webPathSources(path, range)
+      .then((d) => setPathSrc((s) => (s.path === path ? { path, loading: false, data: d, err: '' } : s)))
+      .catch((e) => setPathSrc((s) => (s.path === path ? { path, loading: false, data: null, err: e.message } : s)))
+  }
   // 来源地区地图：world 世界视图 / cn 中国省级视图，面板与放大层共用，保证下钻状态同步
   const [mapMode, setMapMode] = useState('world')
   const p2 = (n) => String(n).padStart(2, '0')
@@ -999,10 +1031,10 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
   const paths = data.paths || []
   const statuses = data.statuses || []
   const countries = data.countries || []
-  // 中国省级分布：复用 Top IP 的归属地（region），内网 / 无法识别的不计入
+  // 中国省级分布：复用 Top IP 的归属地（region），内网 / 无法识别 / 仅注册机构级的地址不计入
   const provMap = new Map()
   ips.forEach((it) => {
-    if (it.internal) return
+    if (it.internal || it.approx) return
     const code = (it.code || '').toLowerCase()
     let name = ''
     if (code === 'hk') name = '香港'
@@ -1120,9 +1152,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
                     const share = total ? Math.round((it.count * 100) / total) : 0
                     const banned = bannedSet.has(it.ip)
                     const place = it.internal ? '内网/保留地址' : it.country || '未知'
-                    const full = it.internal
-                      ? `${place}${it.isp ? ` · ${it.isp}` : ''}`
-                      : [it.country, it.region, it.city].filter(Boolean).join(' · ') || '未知'
+                    const full = geoLabelText(it)
                     return (
                       <div className={`ip-entry ${open === it.ip ? 'open' : ''}`} key={it.ip}>
                         <div className="web-ip-grid ip-click" onClick={() => setOpen((v) => (v === it.ip ? '' : it.ip))}>
@@ -1143,7 +1173,13 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
                             <div><span>请求次数</span><b>{it.count} 次</b></div>
                             <div><span>占比</span><b>{share}%</b></div>
                             {it.bad > 0 && <div><span>异常请求</span><b>{it.bad} 次 4xx / 5xx{it.scan ? '（疑似扫描）' : ''}</b></div>}
-                            <div><span>归属地</span><b>{full}{it.isp && !it.internal ? ` · ${it.isp}` : ''}</b></div>
+                            <div>
+                              <span>归属地</span>
+                              <b>
+                                {geoLabelText(it, false)}
+                                {it.approx && !it.internal && <em className="geo-warn">{GEO_APPROX_NOTE}</em>}
+                              </b>
+                            </div>
                             <div><span>封禁状态</span><b>{banStatus(it.ip)}</b></div>
                             {banBtn(it.ip)}
                           </div>
@@ -1158,19 +1194,53 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
             <div className="panel">
               <div className="panel-head">
                 <div className="panel-title"><Icon name="net" size={16} /> 被访问路径 Top</div>
-                <div className="panel-sub">已去除查询参数</div>
+                <div className="panel-sub">已去除查询参数 · 点击路径查看来源 IP</div>
               </div>
               {paths.length === 0 ? (
                 <div className="empty">该时段暂无访问记录</div>
               ) : (
                 <div className="web-path-list">
                   {paths.map((p) => (
-                    <div className="web-path" key={p.path}>
-                      <div className="web-path-top">
-                        <span className="mono ellipsis" title={p.path}>{p.path}</span>
+                    <div className={`web-path ${openPath === p.path ? 'open' : ''}`} key={p.path}>
+                      <div className="web-path-top ip-click" onClick={() => togglePath(p.path)}>
+                        <span className="path-name">
+                          <span className="mono ellipsis" title={p.path}>{p.path}</span>
+                          <em className="net-caret">›</em>
+                        </span>
                         <span className="web-path-count">{p.count} 次</span>
                       </div>
                       <div className="web-bar"><i style={{ width: `${Math.max(2, (p.count * 100) / maxPath)}%` }} /></div>
+                      {openPath === p.path && (
+                        <div className="path-src">
+                          {pathSrc.loading && <div className="src-hint">正在统计来源 IP…</div>}
+                          {pathSrc.err && <div className="src-hint">来源 IP 加载失败：{pathSrc.err}</div>}
+                          {pathSrc.data && (
+                            (pathSrc.data.ips || []).length === 0 ? (
+                              <div className="src-hint">该时段没有记录到来源 IP（路径-来源关联只保留最近 {pathSrc.data.retentionDays || 7} 天）</div>
+                            ) : (
+                              <>
+                                <div className="src-grid src-head"><span>来源 IP</span><span>请求</span><span>归属地</span></div>
+                                {(pathSrc.data.ips || []).map((it) => {
+                                  const place = it.internal ? '内网/保留地址' : geoLabelText(it)
+                                  return (
+                                    <div className="src-grid src-row" key={it.ip}>
+                                      <span className="mono ellipsis" title={it.ip}>{it.ip}</span>
+                                      <span className="src-num">{it.count} 次</span>
+                                      <span className="ellipsis" title={place}>{place}</span>
+                                    </div>
+                                  )
+                                })}
+                                <div className="src-foot">
+                                  已记录 {pathSrc.data.covered} 次 · 仅列出 Top 5 来源
+                                  {pathSrc.data.partial
+                                    ? '（窗口超过 7 天，只统计最近 7 天）'
+                                    : `（保留最近 ${pathSrc.data.retentionDays || 7} 天）`}
+                                </div>
+                              </>
+                            )
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1220,6 +1290,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
                 统计窗口按整点对齐：1 小时为本小时，1 天为近 24 小时，7 天 / 30 天为近 7 / 30 天（含今天）；
                 异常请求指 4xx / 5xx 状态码，疑似扫描指异常次数 ≥ 20 且占比过半的来源 IP。
                 地区占比按访问量最高的 10 个 IP 估算，公网地址归属地会发送至 ip-api.com 查询并缓存，内网地址仅本地判定。
+                中国 IPv6 等只能识别到运营商注册机构的地址会标注「地址可能不准」，且不计入省份分布。
                 {data.loopback > 0 && (
                   <>
                     <br />
@@ -1302,6 +1373,12 @@ function Network({ data }) {
   const [tick, setTick] = useState(0)
   // 活动连接明细（点「活动连接」卡片打开）：逐条连接 + 可单独断开
   const [showConns, setShowConns] = useState(false)
+  // 进程级流量明细（点「流量用量」标题旁的「明细」打开）
+  const [procOpen, setProcOpen] = useState(false)
+  const [procData, setProcData] = useState(null)
+  const [procLoading, setProcLoading] = useState(false)
+  const [procErr, setProcErr] = useState('')
+  const [procTick, setProcTick] = useState(0)
   const [zoomChart, setZoomChart] = useState('')
   const [connList, setConnList] = useState([])
   const [connLoading, setConnLoading] = useState(false)
@@ -1348,6 +1425,21 @@ function Network({ data }) {
   }, [showConns, connTick])
 
   useEffect(() => {
+    if (!procOpen) return undefined
+    let alive = true
+    const load = () => {
+      setProcLoading(true)
+      api.procTraffic(range)
+        .then((r) => { if (alive) { setProcData(r); setProcErr('') } })
+        .catch((e) => { if (alive) setProcErr(e.message) })
+        .finally(() => { if (alive) setProcLoading(false) })
+    }
+    load()
+    const t = setInterval(load, 5000)
+    return () => { alive = false; clearInterval(t) }
+  }, [procOpen, range, procTick])
+
+  useEffect(() => {
     let alive = true
     const load = () => api.net(range).then((r) => { if (alive) setNet(r) }).catch(() => {})
     load()
@@ -1359,6 +1451,10 @@ function Network({ data }) {
   const traffic = net?.traffic || []
   const trafficRx = traffic.reduce((sum, it) => sum + (it.rx || 0), 0)
   const trafficTx = traffic.reduce((sum, it) => sum + (it.tx || 0), 0)
+  const procRows = procData?.procs || []
+  const procTotal = procRows.reduce((sum, p) => sum + (p.rx || 0) + (p.tx || 0), 0)
+  const hostTotal = (procData?.hostRx || 0) + (procData?.hostTx || 0)
+  const procCoverage = hostTotal > 0 ? Math.min(100, Math.round((procTotal / hostTotal) * 100)) : 0
   const conns = net?.connections || []
   const details = net?.connDetail || []
   const svcs = net?.services || []
@@ -1435,9 +1531,7 @@ function Network({ data }) {
     if (g.loading) return '查询中…'
     const i = g.info || {}
     if (i.error) return i.error
-    if (i.private) return `${i.country}（${i.isp || '本地'}）`
-    const place = [i.country, i.region, i.city].filter(Boolean).join(' · ')
-    return i.isp ? `${place} · ${i.isp}` : place || '未查询到归属地'
+    return geoLabelText(i) || '未查询到归属地'
   }
 
   // 归属地默认不查，点「查看归属」才把该 IP 发送至 ip-api.com（内网地址仅本地判定）
@@ -1580,7 +1674,10 @@ function Network({ data }) {
         </div>
         <div className="panel">
           <div className="panel-head">
-            <PanelTitle icon="chart" onZoom={() => setZoomChart('traffic')}>流量用量</PanelTitle>
+            <div className="head-left">
+              <PanelTitle icon="chart" onZoom={() => setZoomChart('traffic')}>流量用量</PanelTitle>
+              <button type="button" className="btn btn-mini" onClick={() => setProcOpen(true)}>进程明细</button>
+            </div>
             <div className="panel-sub">共 {fmtTraffic(trafficRx + trafficTx)}（↓ {fmtTraffic(trafficRx)} / ↑ {fmtTraffic(trafficTx)}）</div>
           </div>
           <div className="legend">
@@ -1862,6 +1959,65 @@ function Network({ data }) {
           </div>
         </div>
       )}
+      {procOpen && (
+        <div className="pay-mask" onClick={() => setProcOpen(false)}>
+          <div
+            className="conn-dialog proc-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="进程流量明细"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="pay-dialog-head">
+              <strong>进程流量明细 · {rangeText}</strong>
+              <span className="conn-head-btns">
+                <button type="button" className="btn btn-mini" disabled={procLoading} onClick={() => setProcTick((x) => x + 1)}>
+                  {procLoading ? '刷新中…' : '刷新'}
+                </button>
+                <button type="button" className="btn btn-mini" onClick={() => setProcOpen(false)}>关闭</button>
+              </span>
+            </div>
+            <div className="conn-tools">
+              <span className="conn-count">
+                已归因 {fmtTraffic(procTotal)} / 全机 {fmtTraffic(hostTotal)}（{procCoverage}%）
+              </span>
+              <span className="conn-count">
+                {procData?.updatedAt ? `更新于 ${fmtTime(procData.updatedAt)}` : '等待首次采样'}
+              </span>
+            </div>
+            {procErr && <div className="conn-msg">{procErr}</div>}
+            <div className="conn-body">
+              <div className="proc-grid proc-head-row">
+                <span>进程</span><span className="proc-num">下行</span><span className="proc-num">上行</span><span>占比</span>
+              </div>
+              {procRows.length === 0 ? (
+                <div className="empty">{procLoading ? '读取中…' : '暂无进程流量数据（仅统计 TCP，服务刚启动时需累计几分钟）'}</div>
+              ) : (
+                procRows.map((p) => {
+                  const share = procTotal > 0 ? Math.round(((p.rx + p.tx) / procTotal) * 100) : 0
+                  return (
+                    <div className="proc-grid proc-row" key={p.name}>
+                      <span className="ellipsis" title={p.pid ? `${p.name} (PID ${p.pid})` : p.name}>
+                        {p.name}{p.pid ? <em className="conn-pid">#{p.pid}</em> : null}
+                      </span>
+                      <span className="proc-num">{fmtTraffic(p.rx)}</span>
+                      <span className="proc-num">{fmtTraffic(p.tx)}</span>
+                      <span className="proc-share">
+                        <i style={{ width: `${Math.max(2, share)}%` }} />
+                        <em>{share}%</em>
+                      </span>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+            <p className="conn-tip">
+              数据来自内核 TCP socket 的累计字节（ss），每 3 秒差分一次，因此只覆盖 TCP：UDP 流量（如 DNS、QUIC）与存活短于 3 秒的连接不计入，
+              同名进程会合并为一行。已归因合计通常小于上面的全机总量，两者不可直接相加或抵扣。
+            </p>
+          </div>
+        </div>
+      )}
       {zoomChart === 'net' && (
         <ZoomModal title="网络吞吐趋势" icon="net" onClose={() => setZoomChart('')}>
           <div className="legend">
@@ -1924,7 +2080,7 @@ function Health({ data, history, range, onRange }) {
           </div>
           <LineChart points={history} target={data.healthIndex} height={260} range={range} refs={[85, 70, 50]} />
         </div>
-        <div className="panel">
+        <div className="panel baseline-panel">
           <div className="panel-head">
             <PanelTitle icon="check" onZoom={() => setZoom('baseline')}>安全基线构成</PanelTitle>
             {bTotal > 0 && (
@@ -2851,6 +3007,7 @@ export default function App() {
         </nav>
         <button className={`nav-item nav-bottom ${page === 'about' ? 'nav-on' : ''}`} onClick={() => goPage('about')}>
           <Icon name="info" size={22} /> 关于
+          <span className="nav-ver">v{data?.version || 'dev'}</span>
         </button>
       </aside>
       <main className="main">

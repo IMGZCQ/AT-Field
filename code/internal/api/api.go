@@ -83,6 +83,7 @@ type Overview struct {
 type Server struct {
 	store    *store.Store
 	coll     *metrics.Collector
+	proc     *metrics.ProcTraffic
 	audit    *audit.Store
 	sec      *secwatch.Watcher
 	alert    *alert.Evaluator
@@ -107,10 +108,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/stream", s.handleStream)
 	s.mux.HandleFunc("GET /api/health/history", s.handleHistory)
 	s.mux.HandleFunc("GET /api/net", s.handleNet)
+	s.mux.HandleFunc("GET /api/net/proctraffic", s.handleProcTraffic)
 	s.mux.HandleFunc("GET /api/ipinfo", s.handleIPInfo)
 	s.mux.HandleFunc("POST /api/ip/ban", s.handleIPBan)
 	s.mux.HandleFunc("POST /api/ip/unban", s.handleIPUnban)
 	s.mux.HandleFunc("GET /api/web/summary", s.handleWebSummary)
+	s.mux.HandleFunc("GET /api/web/pathsources", s.handleWebPathSources)
 	s.mux.HandleFunc("GET /api/net/connections", s.handleConnList)
 	s.mux.HandleFunc("POST /api/net/connections/kill", s.handleConnKill)
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
@@ -414,6 +417,32 @@ func (s *Server) handleNet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// SetProcTraffic 注入进程级流量采样器（可为 nil，此时明细接口返回空列表）
+func (s *Server) SetProcTraffic(p *metrics.ProcTraffic) { s.proc = p }
+
+// handleProcTraffic 返回所选时间窗口内按进程聚合的 TCP 流量，并附带全机总量用于展示覆盖率。
+func (s *Server) handleProcTraffic(w http.ResponseWriter, r *http.Request) {
+	procs := []metrics.ProcTrafficPoint{}
+	var hostRx, hostTx int64
+	var updated int64
+	if s.proc != nil {
+		procs = s.proc.Top(netWindow(r), 30)
+		updated = s.proc.Updated()
+	}
+	n, step := historyRange(r)
+	for _, p := range s.coll.NetTraffic(n, step) {
+		hostRx += p.Rx
+		hostTx += p.Tx
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"procs":      procs,
+		"hostRx":     hostRx,
+		"hostTx":     hostTx,
+		"updatedAt":  updated,
+		"sampleSecs": 3,
+	})
+}
+
 // webIP 访问来源 IP 及其归属地
 type webIP struct {
 	IP       string `json:"ip"`
@@ -425,6 +454,8 @@ type webIP struct {
 	Region   string `json:"region"`
 	City     string `json:"city"`
 	ISP      string `json:"isp"`
+	AS       string `json:"as,omitempty"`     // ASN 名称
+	Approx   bool   `json:"approx,omitempty"` // 仅查询到注册机构级数据，地址可能不准
 	Internal bool   `json:"internal"`
 }
 
@@ -458,6 +489,8 @@ func (s *Server) handleWebSummary(w http.ResponseWriter, r *http.Request) {
 			ips[i].Region = info.Region
 			ips[i].City = info.City
 			ips[i].ISP = info.ISP
+			ips[i].AS = info.AS
+			ips[i].Approx = info.Approx
 		}(i, it.IP)
 	}
 	wg.Wait()
@@ -517,6 +550,49 @@ func (s *Server) handleWebSummary(w http.ResponseWriter, r *http.Request) {
 		"statuses":      q.Statuses,
 		"countries":     countries,
 		"domesticPct":   domesticPct,
+	})
+}
+
+// handleWebPathSources 返回某条访问路径在所选时限内的来源 IP Top。
+// 路径-IP 关联只保留最近 7 天，窗口更长时按 7 天统计并标记 partial。
+func (s *Server) handleWebPathSources(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("path"))
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "缺少 path 参数")
+		return
+	}
+	if s.web == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"path": name, "ips": []webIP{}, "covered": 0})
+		return
+	}
+	q := s.web.PathSources(name, r.URL.Query().Get("range"), 5)
+	ips := make([]webIP, len(q.IPs))
+	var wg sync.WaitGroup
+	for i, it := range q.IPs {
+		ips[i] = webIP{IP: it.IP, Count: it.Count}
+		wg.Add(1)
+		go func(i int, ip string) {
+			defer wg.Done()
+			info := s.geoip.Lookup(ip)
+			ips[i].Internal = info.Private
+			ips[i].Country = info.Country
+			ips[i].Code = info.Code
+			ips[i].Region = info.Region
+			ips[i].City = info.City
+			ips[i].ISP = info.ISP
+			ips[i].AS = info.AS
+			ips[i].Approx = info.Approx
+		}(i, it.IP)
+	}
+	wg.Wait()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":          q.Path,
+		"from":          q.From,
+		"to":            q.To,
+		"covered":       q.Covered,
+		"partial":       q.Partial,
+		"retentionDays": weblog.PathIPRetentionDays,
+		"ips":           ips,
 	})
 }
 

@@ -45,6 +45,16 @@ func main() {
 	defer coll.Close()
 	coll.Start()
 
+	// 进程级流量：每 3 秒读 ss 的 socket 累计字节做差分，分钟级聚合、每分钟落盘、保留 7 天
+	procs, err := metrics.OpenProcTraffic(config.DataDir())
+	if err != nil {
+		log.Printf("初始化进程流量统计失败（明细功能将不可用）: %v", err)
+		procs = nil
+	} else {
+		defer procs.Close()
+		procs.Start()
+	}
+
 	// 操作审计日志（启用/关闭防护、修改配置等真实事件）
 	au, err := audit.Open(config.DataDir())
 	if err != nil {
@@ -76,6 +86,7 @@ func main() {
 
 	api.Version = Version
 	handler := api.New(st, coll, au, sec, evaluator, web, frontend.Dist(), config.BasePath())
+	handler.SetProcTraffic(procs)
 	handler.StartAutoBan()
 	handler.StartSecurityAlerts()
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 15 * time.Second}

@@ -559,6 +559,68 @@ func appCenterServices() []ServiceStatus {
 	return res
 }
 
+// SocketTraffic 一条 TCP 连接的内核累计字节数（来自 ss -tinp）
+type SocketTraffic struct {
+	Key     string // 本机地址|远端地址|PID，用于前后两次采样配对
+	Process string // 进程名
+	PID     int
+	Sent    uint64 // 该连接累计发送字节
+	Recv    uint64 // 该连接累计接收字节
+}
+
+var (
+	reBytesSent = regexp.MustCompile(`bytes_sent:(\d+)`)
+	reBytesRecv = regexp.MustCompile(`bytes_received:(\d+)`)
+)
+
+// TrafficSockets 用 ss -tinp 采集当前已建立 TCP 连接的内核累计字节数。
+// 这里只做全量快照，差值计算交给调用方；取不到进程归属的连接会被跳过，
+// 因为无法归因到具体进程。第二个返回值为 false 表示采集失败（而不是没有连接）。
+func TrafficSockets() ([]SocketTraffic, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	out, err := runCmd(ctx, "ss", "-tinp")
+	if err != nil && strings.TrimSpace(out) == "" {
+		return nil, false
+	}
+	list := make([]SocketTraffic, 0, 64)
+	cur := -1
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "State") || strings.HasPrefix(line, "Netid") || strings.HasPrefix(line, "Recv-Q") {
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			// 连接的内核统计行：bytes_sent / bytes_received
+			if cur < 0 {
+				continue
+			}
+			if m := reBytesSent.FindStringSubmatch(line); m != nil {
+				list[cur].Sent, _ = strconv.ParseUint(m[1], 10, 64)
+			}
+			if m := reBytesRecv.FindStringSubmatch(line); m != nil {
+				list[cur].Recv, _ = strconv.ParseUint(m[1], 10, 64)
+			}
+			continue
+		}
+		f := strings.Fields(line)
+		cur = -1
+		if len(f) < 5 || f[0] != "ESTAB" {
+			continue
+		}
+		name, pid := parseSSProc(strings.Join(f[5:], " "))
+		if pid <= 0 {
+			continue
+		}
+		list = append(list, SocketTraffic{
+			Key:     f[3] + "|" + f[4] + "|" + strconv.Itoa(pid),
+			Process: name,
+			PID:     pid,
+		})
+		cur = len(list) - 1
+	}
+	return list, true
+}
+
 // runCmd 执行外部命令并返回合并输出（退出码非 0 时同时返回错误）。
 func runCmd(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)

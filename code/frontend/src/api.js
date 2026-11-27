@@ -22,7 +22,10 @@ export const api = {
   streamUrl: () => base + '/api/stream',
   history: (range = '7d') => request(`/api/health/history?range=${range}`),
   net: (range = '1h') => request(`/api/net?range=${range}`),
+  procTraffic: (range = '1d') => request(`/api/net/proctraffic?range=${range}`),
   webSummary: (range = '1d') => request(`/api/web/summary?range=${range}`),
+  webPathSources: (path, range = '1d') =>
+    request(`/api/web/pathsources?path=${encodeURIComponent(path)}&range=${range}`),
   ipinfo: (ip) => request(`/api/ipinfo?ip=${encodeURIComponent(ip)}`),
   banIp: (ip, duration = '1h') =>
     request('/api/ip/ban', { method: 'POST', body: JSON.stringify({ ip, duration }) }),
