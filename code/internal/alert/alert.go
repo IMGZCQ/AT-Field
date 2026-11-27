@@ -203,8 +203,8 @@ func (e *Evaluator) Evaluate(m system.Metrics, health int) {
 		conds = append(conds, cond{
 			key: "cpu-temp", module: "温度异常", level: level,
 			value: m.TempC, thr: a.TempC, hys: 3, higher: true,
-			firing: "系统最高温度达 " + ftoa(m.TempC) + "℃，超过阈值 " + ftoa(a.TempC) + "℃",
-			ok:     "系统温度已回落至 " + ftoa(m.TempC) + "℃",
+			firing: "CPU 温度达 " + ftoa(m.TempC) + "℃，超过阈值 " + ftoa(a.TempC) + "℃",
+			ok:     "CPU 温度已回落至 " + ftoa(m.TempC) + "℃",
 		})
 	}
 	if m.DiskTempC > 0 && a.WatchDiskTemp {

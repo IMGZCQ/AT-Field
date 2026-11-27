@@ -1,24 +1,38 @@
-// Package geo 提供 IP 归属地查询：内网/保留地址本地判定，公网地址按需向
-// ip-api.com 发起查询，结果缓存 24 小时（最多 512 条），避免频繁请求第三方。
+// Package geo 提供 IP 归属地查询：内网/保留地址本地判定；公网地址并发查询
+// ip-api、ipwho.is、ip2location、iplocation 多个数据源，只有至少两个数据源的
+// 城市坐标互相接近时才采信省市，否则只到国家/运营商并标记 Approx（地址可能不准）。
+// 结果缓存 24 小时（最多 512 条），避免频繁请求第三方。
 package geo
 
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	// endpoint ip-api.com 免费接口（仅 HTTP）
-	endpoint = "http://ip-api.com/json/%s?lang=zh-CN&fields=status,message,country,countryCode,regionName,city,isp,org,as"
+	// ipAPIEndpoint ip-api.com 免费接口（仅 HTTP，返回中文地名）
+	ipAPIEndpoint = "http://ip-api.com/json/%s?lang=zh-CN&fields=status,message,country,countryCode,regionName,city,isp,org,as,lat,lon"
+	// ipWhoEndpoint ipwho.is 免费接口（支持中文地名）
+	ipWhoEndpoint = "https://ipwho.is/%s?lang=zh-CN"
+	// ip2LocEndpoint ip2location.io 免费接口（1000 次/天）
+	ip2LocEndpoint = "https://api.ip2location.io/?ip=%s"
+	// iplocEndpoint iplocation.net 免费接口（主要用来确认国家与运营商）
+	iplocEndpoint = "https://api.iplocation.net/?ip=%s"
 	// cacheTTL 查询结果缓存时长
 	cacheTTL = 24 * time.Hour
 	// cacheMax 缓存条目上限
 	cacheMax = 512
+	// agreeKm 两个数据源给出的城市坐标相距小于该值视为一致
+	agreeKm = 200
+	// userAgent 第三方接口要求的常规 UA
+	userAgent = "AT-ForceField/1.0"
 )
 
 // Info 一个 IP 的归属地信息
@@ -32,9 +46,9 @@ type Info struct {
 	ISP     string `json:"isp"`
 	Org     string `json:"org"`
 	AS      string `json:"as,omitempty"` // ASN，如 "AS56047 China Mobile communications corporation"
-	// Approx 第三方库只查到注册机构级数据（常见于中国 IPv6），省/市是注册机构地址，不代表实际位置
+	// Approx 多个数据源未能互相印证城市（常见于中国 IPv6 / 注册机构级数据），省市不可信
 	Approx bool   `json:"approx,omitempty"`
-	Source string `json:"source"` // local / ip-api / cache
+	Source string `json:"source"` // local / multi / cache
 	Error  string `json:"error,omitempty"`
 }
 
@@ -59,7 +73,7 @@ func New() *Resolver {
 	}
 }
 
-// Lookup 查询 IP 归属地。内网地址直接本地判定，公网地址在线查询（结果缓存）。
+// Lookup 查询 IP 归属地。内网地址直接本地判定，公网地址多源在线查询（结果缓存）。
 func (r *Resolver) Lookup(raw string) Info {
 	ip := strings.TrimSpace(raw)
 	if ip == "" {
@@ -101,56 +115,284 @@ func (r *Resolver) Lookup(raw string) Info {
 	return info
 }
 
-// query 向 ip-api.com 发起查询
+// sourceData 单个数据源的查询结果
+type sourceData struct {
+	name     string
+	prio     int
+	info     Info
+	registry bool // 运营商/机构只是注册机构，城市不可信
+	lat, lon float64
+	hasGeo   bool
+}
+
+// query 并发查询多个数据源并合并
 func (r *Resolver) query(ip string) Info {
-	resp, err := r.client.Get(fmt.Sprintf(endpoint, ip))
-	if err != nil {
-		return Info{IP: ip, Error: "查询失败：" + err.Error()}
+	type fetcher func(string) (sourceData, bool)
+	srcs := []struct {
+		name string
+		prio int
+		fn   fetcher
+	}{
+		{"ip-api", 0, r.fetchIPAPI},
+		{"iplocation.net", 1, r.fetchIPLocation},
+		{"ipwho.is", 2, r.fetchIPWho},
+		{"ip2location.io", 3, r.fetchIP2Location},
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return Info{IP: ip, Error: fmt.Sprintf("查询失败：HTTP %d", resp.StatusCode)}
+
+	out := make(chan sourceData, len(srcs))
+	var wg sync.WaitGroup
+	for _, s := range srcs {
+		wg.Add(1)
+		go func(name string, prio int, fn fetcher) {
+			defer wg.Done()
+			d, ok := fn(ip)
+			if !ok {
+				return
+			}
+			d.name, d.prio = name, prio
+			out <- d
+		}(s.name, s.prio, s.fn)
 	}
-	var body struct {
-		Status      string `json:"status"`
-		Message     string `json:"message"`
-		Country     string `json:"country"`
-		CountryCode string `json:"countryCode"`
-		RegionName  string `json:"regionName"`
-		City        string `json:"city"`
-		ISP         string `json:"isp"`
-		Org         string `json:"org"`
-		AS          string `json:"as"`
+	wg.Wait()
+	close(out)
+
+	var results []sourceData
+	for d := range out {
+		results = append(results, d)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return Info{IP: ip, Error: "解析响应失败"}
+	if len(results) == 0 {
+		return Info{IP: ip, Error: "查询失败：所有数据源均不可用"}
 	}
-	if body.Status != "success" {
-		msg := body.Message
-		if msg == "" {
-			msg = "未查询到归属地"
+	return merge(ip, results)
+}
+
+// merge 合并多源结果：地名以 ip-api（中文）优先，城市需至少两个源坐标一致才采信
+func merge(ip string, ds []sourceData) Info {
+	sortByPrio(ds)
+
+	info := Info{IP: ip, Source: "multi"}
+	// 国家 / 国家代码：优先 ip-api，其次第一个有值的源
+	for _, d := range ds {
+		if info.Country == "" && d.info.Country != "" {
+			info.Country = d.info.Country
 		}
-		return Info{IP: ip, Error: msg}
+		if info.Code == "" && d.info.Code != "" {
+			info.Code = d.info.Code
+		}
 	}
-	info := Info{
-		IP:      ip,
-		Country: body.Country,
-		Code:    body.CountryCode,
-		Region:  body.RegionName,
-		City:    body.City,
-		ISP:     body.ISP,
-		Org:     body.Org,
-		AS:      body.AS,
-		Source:  "ip-api",
-	}
-	// ISP / 机构是 CNNIC 之类的注册机构时，省市只是机构地址，改用 ASN 识别真实运营商
-	if isRegistry(body.ISP, body.Org) {
+
+	if cityDS, ok := agreeingCity(ds); ok {
+		for _, d := range cityDS {
+			if info.Region == "" && d.info.Region != "" {
+				info.Region = d.info.Region
+			}
+			if info.City == "" && d.info.City != "" {
+				info.City = d.info.City
+			}
+		}
+	} else {
 		info.Approx = true
-		if op := operatorName(body.AS); op != "" {
-			info.ISP = op
+	}
+
+	// 运营商：优先非注册机构的 ISP，其次用 ASN 名称识别
+	bestPrio := int(^uint(0) >> 1)
+	for _, d := range ds {
+		name := operatorName(d.info.ISP)
+		if name == "" {
+			continue
+		}
+		prio := d.prio
+		if d.registry {
+			// 注册机构名不能当运营商，改用其 ASN 识别结果
+			name = operatorName(d.info.AS)
+			prio = len(ds) + 1
+		}
+		if name != "" && prio < bestPrio {
+			bestPrio = prio
+			info.ISP = name
+		}
+	}
+	for _, d := range ds {
+		if info.AS == "" && d.info.AS != "" {
+			info.AS = d.info.AS
+		}
+		if info.Org == "" && d.info.Org != "" && !isRegistry(d.info.Org, "") {
+			info.Org = d.info.Org
 		}
 	}
 	return info
+}
+
+// agreeingCity 找出至少两个坐标互相接近的非注册机构来源，城市可信时返回该聚类
+func agreeingCity(ds []sourceData) ([]sourceData, bool) {
+	var cands []sourceData
+	for _, d := range ds {
+		if d.registry || !d.hasGeo || d.info.City == "" {
+			continue
+		}
+		cands = append(cands, d)
+	}
+	bestIdx, bestN := -1, 0
+	for i := range cands {
+		n := 1
+		for j := range cands {
+			if i != j && distanceKm(cands[i].lat, cands[i].lon, cands[j].lat, cands[j].lon) <= agreeKm {
+				n++
+			}
+		}
+		if n > bestN {
+			bestN, bestIdx = n, i
+		}
+	}
+	if bestN < 2 {
+		return nil, false
+	}
+	// 只返回互相印证的来源，避免用离群源的地名；按优先级排序，让 ip-api 的中文地名优先
+	cluster := []sourceData{cands[bestIdx]}
+	for j := range cands {
+		if j != bestIdx && distanceKm(cands[bestIdx].lat, cands[bestIdx].lon, cands[j].lat, cands[j].lon) <= agreeKm {
+			cluster = append(cluster, cands[j])
+		}
+	}
+	sortByPrio(cluster)
+	return cluster, true
+}
+
+func distanceKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const rad = math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLon := (lon2 - lon1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return 2 * 6371 * math.Asin(math.Sqrt(a))
+}
+
+func sortByPrio(ds []sourceData) {
+	for i := 1; i < len(ds); i++ {
+		for j := i; j > 0 && ds[j].prio < ds[j-1].prio; j-- {
+			ds[j], ds[j-1] = ds[j-1], ds[j]
+		}
+	}
+}
+
+// fetchJSON 请求并解析 JSON，失败返回 false
+func (r *Resolver) fetchJSON(rawURL string, dst any) bool {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	return json.NewDecoder(resp.Body).Decode(dst) == nil
+}
+
+// fetchIPAPI ip-api.com（中文地名，主数据源）
+func (r *Resolver) fetchIPAPI(ip string) (sourceData, bool) {
+	var body struct {
+		Status      string  `json:"status"`
+		Country     string  `json:"country"`
+		CountryCode string  `json:"countryCode"`
+		RegionName  string  `json:"regionName"`
+		City        string  `json:"city"`
+		ISP         string  `json:"isp"`
+		Org         string  `json:"org"`
+		AS          string  `json:"as"`
+		Lat         float64 `json:"lat"`
+		Lon         float64 `json:"lon"`
+	}
+	if !r.fetchJSON(fmt.Sprintf(ipAPIEndpoint, ip), &body) || body.Status != "success" {
+		return sourceData{}, false
+	}
+	d := sourceData{registry: isRegistry(body.ISP, body.Org), lat: body.Lat, lon: body.Lon, hasGeo: body.Lat != 0 || body.Lon != 0}
+	d.info = Info{
+		IP: ip, Country: body.Country, Code: body.CountryCode,
+		Region: body.RegionName, City: body.City,
+		ISP: body.ISP, Org: body.Org, AS: body.AS,
+	}
+	return d, true
+}
+
+// fetchIPWho ipwho.is
+func (r *Resolver) fetchIPWho(ip string) (sourceData, bool) {
+	var body struct {
+		Success     bool    `json:"success"`
+		Country     string  `json:"country"`
+		CountryCode string  `json:"country_code"`
+		Region      string  `json:"region"`
+		City        string  `json:"city"`
+		Lat         float64 `json:"latitude"`
+		Lon         float64 `json:"longitude"`
+		Connection  struct {
+			ASN int    `json:"asn"`
+			Org string `json:"org"`
+			ISP string `json:"isp"`
+		} `json:"connection"`
+	}
+	if !r.fetchJSON(fmt.Sprintf(ipWhoEndpoint, ip), &body) || !body.Success {
+		return sourceData{}, false
+	}
+	as := ""
+	if body.Connection.ASN > 0 {
+		as = fmt.Sprintf("AS%d %s", body.Connection.ASN, body.Connection.Org)
+	}
+	d := sourceData{registry: isRegistry(body.Connection.ISP, body.Connection.Org), lat: body.Lat, lon: body.Lon, hasGeo: body.Lat != 0 || body.Lon != 0}
+	d.info = Info{
+		IP: ip, Country: body.Country, Code: body.CountryCode,
+		Region: body.Region, City: body.City,
+		ISP: body.Connection.ISP, Org: body.Connection.Org, AS: strings.TrimSpace(as),
+	}
+	return d, true
+}
+
+// fetchIP2Location ip2location.io（免费额度 1000 次/天）
+func (r *Resolver) fetchIP2Location(ip string) (sourceData, bool) {
+	var body struct {
+		CountryCode string  `json:"country_code"`
+		CountryName string  `json:"country_name"`
+		RegionName  string  `json:"region_name"`
+		CityName    string  `json:"city_name"`
+		Lat         float64 `json:"latitude"`
+		Lon         float64 `json:"longitude"`
+		ASN         string  `json:"asn"`
+		AS          string  `json:"as"`
+	}
+	if !r.fetchJSON(fmt.Sprintf(ip2LocEndpoint, ip), &body) || body.CountryCode == "" {
+		return sourceData{}, false
+	}
+	as := body.AS
+	if body.ASN != "" && body.AS != "" {
+		as = "AS" + body.ASN + " " + body.AS
+	}
+	d := sourceData{registry: isRegistry(body.AS, ""), lat: body.Lat, lon: body.Lon, hasGeo: body.Lat != 0 || body.Lon != 0}
+	d.info = Info{
+		IP: ip, Country: body.CountryName, Code: body.CountryCode,
+		Region: body.RegionName, City: body.CityName,
+		ISP: body.AS, AS: as,
+	}
+	return d, true
+}
+
+// fetchIPLocation iplocation.net（只提供国家与运营商，用于确认）
+func (r *Resolver) fetchIPLocation(ip string) (sourceData, bool) {
+	var body struct {
+		CountryName string `json:"country_name"`
+		CountryCode string `json:"country_code2"`
+		ISP         string `json:"isp"`
+		Code        string `json:"response_code"`
+	}
+	if !r.fetchJSON(fmt.Sprintf(iplocEndpoint, url.QueryEscape(ip)), &body) || body.CountryCode == "" || body.Code != "200" {
+		return sourceData{}, false
+	}
+	d := sourceData{registry: isRegistry(body.ISP, "")}
+	d.info = Info{IP: ip, Country: body.CountryName, Code: body.CountryCode, ISP: body.ISP}
+	return d, true
 }
 
 // isRegistry 判断 ISP / 机构名是否只是 IP 注册机构（此时地址不可信）
@@ -167,9 +409,9 @@ func isRegistry(isp, org string) bool {
 	return false
 }
 
-// operatorName 从 ASN 名称里识别运营商，识别不出时返回 ASN 名称本身
-func operatorName(as string) string {
-	s := strings.TrimSpace(as)
+// operatorName 从 ISP / ASN 名称里识别运营商，识别不出时返回清洗后的名称
+func operatorName(name string) string {
+	s := strings.TrimSpace(name)
 	if s == "" {
 		return ""
 	}

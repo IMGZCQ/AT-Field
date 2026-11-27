@@ -2,7 +2,7 @@
 
 > 为飞牛 fnOS NAS 打造的一体化安全面板：真实系统指标、防护开关、网络与服务排障、扫描自动封禁、告警推送与操作审计，全部集中在一个页面里。
 
-![version](https://img.shields.io/badge/version-0.1.70-7c5cff?style=flat-square)
+![version](https://img.shields.io/badge/version-0.1.81-7c5cff?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-fnOS%20%2F%20Linux-2ea043?style=flat-square)
 ![go](https://img.shields.io/badge/Go-1.22-00ADD8?style=flat-square&logo=go&logoColor=white)
 ![react](https://img.shields.io/badge/React-18%20%2B%20Vite-61DAFB?style=flat-square&logo=react&logoColor=black)
@@ -91,15 +91,22 @@
 > 完整版本与安装包见 [Releases](https://github.com/IMGZCQ/AT-Field/releases)，最新版本会默认展开。
 
 <details open>
-<summary><b>v0.1.80</b> · IP 归属地误报修复</summary>
+<summary><b>v0.1.81</b> · 归属地多源比对与 CPU 温度修正</summary>
 
-- 中国 IPv6 段常被 ip-api 只解析到注册机构（如 CNNIC 的北京金融街地址），现在改用 ASN 识别真实运营商（中国移动 / 中国电信 / 中国联通 / 中国广电等），并在归属地后标注「注册机构地址，可能不准」
-- 只识别到注册机构的地址不再计入省份分布，避免把访问量错误算到北京
+- IP 归属地改为多源比对（ip-api / ipwho.is / ip2location / iplocation）：只有两个以上数据源的城市坐标一致才显示省市，否则只显示国家与运营商并标注「地址可能不准」，修正中国 IPv6 被误报为北京的问题
+- 归属地结果缓存 24 小时，单个数据源失败自动降级，不再依赖单一接口
+- CPU 温度只读取 CPU 传感器（x86_pkg_temp / coretemp / k10temp / cpu-thermal / soc-thermal），不再取全系统最高温，避免主板 / GPU / 电池传感器误触发温度告警；健康度与设置页标签统一为「CPU 温度」
+- 访问分析「境外访问占比」在无公网访问时显示「—」并注明内网 / 本地不计入，脚注统一为「境内公网 X%」
 
 </details>
 
 <details>
-<summary><b>历史版本</b> · v0.1.79 及更早（点击展开）</summary>
+<summary><b>历史版本</b> · v0.1.80 及更早（点击展开）</summary>
+
+### v0.1.80 · IP 归属地误报修复
+
+- 中国 IPv6 段常被 ip-api 只解析到注册机构（如 CNNIC 的北京金融街地址），改用 ASN 识别真实运营商（中国移动 / 中国电信 / 中国联通 / 中国广电等），并在归属地后标注「注册机构地址，可能不准」
+- 只识别到注册机构的地址不再计入省份分布，避免把访问量错误算到北京
 
 ### v0.1.79 · 被访问路径下钻来源 IP
 

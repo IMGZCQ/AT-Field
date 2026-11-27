@@ -34,7 +34,7 @@ type Metrics struct {
 	DiskReadKBps     int64   `json:"diskReadKBps"`     // 磁盘读（KB/s）
 	DiskWriteKBps    int64   `json:"diskWriteKBps"`    // 磁盘写（KB/s）
 	EstablishedConns int     `json:"establishedConns"` // ESTABLISHED 的 TCP 连接数
-	TempC            float64 `json:"tempC"`            // 最高温度（摄氏度），-1 表示无传感器
+	TempC            float64 `json:"tempC"`            // CPU 温度（摄氏度），-1 表示无传感器
 	DiskTempC        float64 `json:"diskTempC"`        // 硬盘/SSD 最高温度，-1 表示无传感器
 	LoggedInUsers    int     `json:"loggedInUsers"`    // 当前登录用户数
 	UPSBattery       int     `json:"upsBattery"`       // UPS 电量百分比，-1 表示未接 UPS
@@ -482,28 +482,104 @@ func readEstablished() int {
 	return n
 }
 
-// readTemp 取 /sys/class/thermal 各温度传感器中的最高值（摄氏度）
+// readTemp 读取 CPU 温度（摄氏度）：只认 CPU 相关的传感器，不取全系统最大值，
+// 避免 GPU、主板、电池等其他 thermal zone 误触发 CPU 温度告警。
+// 优先级：/sys/class/thermal 中的 CPU 类型 zone → hwmon 的 coretemp/k10temp → 无传感器返回 -1。
 func readTemp() float64 {
+	if v, ok := readCPUThermalZone(); ok {
+		return v
+	}
+	return readCPUHwmon()
+}
+
+// readCPUThermalZone 遍历 /sys/class/thermal/thermal_zone*，只统计 CPU 类型传感器的最大读数；
+// 若平台没有 CPU 类型 zone（老平台常见），退回唯一的 ACPI thermal zone（acpitz）。
+func readCPUThermalZone() (float64, bool) {
 	paths, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
-	best := -1.0
+	cpuBest := -1.0
+	acpiBest := -1.0
 	for _, p := range paths {
+		typRaw, err := os.ReadFile(filepath.Join(filepath.Dir(p), "type"))
+		if err != nil {
+			continue
+		}
+		c, ok := readMilliCelsius(p)
+		if !ok {
+			continue
+		}
+		typ := strings.ToLower(strings.TrimSpace(string(typRaw)))
+		switch {
+		case isCPUThermalType(typ):
+			if c > cpuBest {
+				cpuBest = c
+			}
+		case typ == "acpitz":
+			if c > acpiBest {
+				acpiBest = c
+			}
+		}
+	}
+	if cpuBest >= 0 {
+		return cpuBest, true
+	}
+	if acpiBest >= 0 {
+		return acpiBest, true
+	}
+	return -1, false
+}
+
+// isCPUThermalType 判断 thermal zone 的 type 是否属于 CPU 温度传感器。
+// 覆盖 x86 的 x86_pkg_temp、ARM 的 cpu-thermal / soc-thermal 以及常见 hwmon 同名类型。
+func isCPUThermalType(t string) bool {
+	switch {
+	case strings.Contains(t, "cpu"), strings.Contains(t, "pkg"),
+		strings.Contains(t, "coretemp"), strings.Contains(t, "k10temp"),
+		strings.Contains(t, "soc-thermal"), strings.Contains(t, "soc_thermal"):
+		return true
+	}
+	return false
+}
+
+// readCPUHwmon 从 hwmon 读取 CPU 封装/核心温度（coretemp / k10temp / cpu_thermal / soc_thermal），
+// 取各核心读数中的最大值；找不到 CPU 传感器时返回 -1。
+func readCPUHwmon() float64 {
+	names, _ := filepath.Glob("/sys/class/hwmon/hwmon*/name")
+	best := -1.0
+	for _, p := range names {
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		v, err := strconv.ParseFloat(strings.TrimSpace(string(raw)), 64)
-		if err != nil {
+		switch strings.ToLower(strings.TrimSpace(string(raw))) {
+		case "coretemp", "k10temp", "cpu_thermal", "soc_thermal":
+		default:
 			continue
 		}
-		c := v / 1000
-		if c < 0 || c > 150 {
-			continue
-		}
-		if c > best {
-			best = c
+		inputs, _ := filepath.Glob(filepath.Join(filepath.Dir(p), "temp*_input"))
+		for _, in := range inputs {
+			if c, ok := readMilliCelsius(in); ok && c > best {
+				best = c
+			}
 		}
 	}
 	return best
+}
+
+// readMilliCelsius 读取 sysfs 中的毫摄氏度文件并换算为摄氏度，过滤 0~150℃ 之外的无效值
+func readMilliCelsius(path string) (float64, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(string(raw)), 64)
+	if err != nil {
+		return 0, false
+	}
+	c := v / 1000
+	if c < 0 || c > 150 {
+		return 0, false
+	}
+	return c, true
 }
 
 // readDisks 通过 `df -kP` 汇总所有真实块设备挂载点（数据盘/存储池）。

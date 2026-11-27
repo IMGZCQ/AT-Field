@@ -502,8 +502,10 @@ func (s *Server) handleWebSummary(w http.ResponseWriter, r *http.Request) {
 	for _, it := range ips {
 		name := it.Country
 		if it.Internal {
+			// 内网 / 回环地址与境外判断无关，不计入比例
 			name = "内网/保留地址"
 		} else if name == "" {
+			// 归属地查询失败：既不算境内也不算境外，避免把未知数据算成境外
 			name = "未知"
 		} else if name != "中国" {
 			abroad += it.Count
@@ -524,7 +526,8 @@ func (s *Server) handleWebSummary(w http.ResponseWriter, r *http.Request) {
 			countries[j], countries[j-1] = countries[j-1], countries[j]
 		}
 	}
-	domesticPct := 0
+	// 没有任何可判定的公网访问时返回 null，前端显示“—”，而不是误报 100% 境外
+	var domesticPct any
 	if domestic+abroad > 0 {
 		domesticPct = domestic * 100 / (domestic + abroad)
 	}

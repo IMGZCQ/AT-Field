@@ -342,7 +342,7 @@ const banDurLabel = (v) => (BAN_DURS.find(([k]) => k === v) || BAN_DURS[0])[1]
 
 /* ---------- IP 归属地展示 ---------- */
 // approx：第三方库只查到注册机构级数据（常见于中国 IPv6），省/市是机构地址，不代表实际位置
-const GEO_APPROX_NOTE = '注册机构地址，可能不准'
+const GEO_APPROX_NOTE = '地址可能不准'
 const geoRegionText = (i = {}) => {
   if (i.private) return i.country || '内网/保留地址'
   if (i.approx) return i.country || '未知'
@@ -1053,7 +1053,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
   const total = data.total || 0
   const bad = data.bad != null ? data.bad : statuses.filter((s) => /^[45]/.test(s.code)).reduce((a, s) => a + s.count, 0)
   const badPct = total ? Math.round((bad * 100) / total) : 0
-  const abroadPct = data.domesticPct == null ? 0 : 100 - data.domesticPct
+  const abroadPct = data.domesticPct == null ? null : 100 - data.domesticPct
   const maxPath = Math.max(1, ...paths.map((p) => p.count))
   const countrySum = countries.reduce((a, c) => a + c.count, 0) || 1
   const maxCountry = Math.max(1, ...countries.map((c) => c.count))
@@ -1086,8 +1086,8 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
             <StatCard icon={siTime} title="异常请求" watermark={wmTime} foot={`${bad.toLocaleString()} 次 4xx / 5xx${delta(bad, data.prevBad)}`}>
               <div className="stat-value-lg">{badPct}%</div>
             </StatCard>
-            <StatCard icon={siPower} title="境外访问占比" watermark={wmPower} foot={`境内 / 内网 ${data.domesticPct ?? 0}%（按 Top IP 估算）`}>
-              <div className="stat-value-lg">{abroadPct}%</div>
+            <StatCard icon={siPower} title="境外访问占比" watermark={wmPower} foot={data.domesticPct == null ? '暂无公网访问，无法判定（内网/本地未计入）' : `境内公网 ${data.domesticPct}%（内网/本地未计入）`}>
+              <div className="stat-value-lg">{abroadPct == null ? '—' : `${abroadPct}%`}</div>
             </StatCard>
             <StatCard icon={siStatus} title="最近访问" watermark={wmStatus} foot={`聚合数据保留 ${data.retentionDays} 天`}>
               <div className="stat-value-lg">{data.lastEvent ? fmtTime(data.lastEvent) : '—'}</div>
@@ -1289,8 +1289,8 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
                 <br />
                 统计窗口按整点对齐：1 小时为本小时，1 天为近 24 小时，7 天 / 30 天为近 7 / 30 天（含今天）；
                 异常请求指 4xx / 5xx 状态码，疑似扫描指异常次数 ≥ 20 且占比过半的来源 IP。
-                地区占比按访问量最高的 10 个 IP 估算，公网地址归属地会发送至 ip-api.com 查询并缓存，内网地址仅本地判定。
-                中国 IPv6 等只能识别到运营商注册机构的地址会标注「地址可能不准」，且不计入省份分布。
+                地区占比按访问量最高的 10 个 IP 估算，公网地址会并发查询 ip-api、ipwho.is、ip2location、iplocation 多源比对并缓存 24 小时，内网地址仅本地判定。
+                只有两个以上数据源的城市坐标一致时才显示省市，否则只显示国家 / 运营商并标注「地址可能不准」，这类地址不计入省份分布。
                 {data.loopback > 0 && (
                   <>
                     <br />
@@ -2149,7 +2149,7 @@ function Health({ data, history, range, onRange }) {
           <div><span>网络下行 / 上行</span><b>{fmtRate(data.netRxKBps)} / {fmtRate(data.netTxKBps)}</b></div>
           <div><span>磁盘读 / 写</span><b>{fmtRate(data.diskReadKBps)} / {fmtRate(data.diskWriteKBps)}</b></div>
           <div><span>活动连接数</span><b>{data.establishedConns} 个</b></div>
-          <div><span>最高温度</span><b>{data.tempC > 0 ? `${data.tempC.toFixed(1)} ℃` : '—'}</b></div>
+          <div><span>CPU 温度</span><b>{data.tempC > 0 ? `${data.tempC.toFixed(1)} ℃` : '—'}</b></div>
           <div><span>硬盘温度</span><b>{data.diskTempC > 0 ? `${data.diskTempC.toFixed(1)} ℃` : '—'}</b></div>
           <div><span>在线用户</span><b>{data.loggedInUsers} 人</b></div>
           <div><span>UPS 电量</span><b>{data.upsBattery >= 0 ? `${data.upsBattery}%` : '未接 UPS'}</b></div>
@@ -2537,7 +2537,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
             ['diskPct', '磁盘使用率（%）', 1, 100, 'watchDisk'],
             ['memPct', '内存使用率（%）', 1, 100, 'watchMem'],
             ['volumePct', '单个分区（%）', 1, 100, 'watchVolume'],
-            ['tempC', '系统温度（℃）', 30, 120, 'watchTemp'],
+            ['tempC', 'CPU 温度（℃）', 30, 120, 'watchTemp'],
             ['diskTempC', '硬盘温度（℃）', 30, 100, 'watchDiskTemp'],
           ].map(([key, label, lo, hi, watch]) => {
             // 单项监控开关：默认开启，取消勾选后该项不判定、不写日志
@@ -2736,7 +2736,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
           <div><span>可用内存</span><b>{data.availableMB ? `${data.availableMB} MB` : '—'}</b></div>
           <div><span>磁盘容量</span><b>{data.diskTotalGB ? `${data.diskUsedGB} / ${data.diskTotalGB} GB` : '—'}</b></div>
           <div><span>系统负载</span><b>{data.loadAvg1 >= 0 ? data.loadAvg1.toFixed(2) : '—'}</b></div>
-          <div><span>最高温度</span><b>{data.tempC > 0 ? `${data.tempC.toFixed(1)} ℃` : '—'}</b></div>
+          <div><span>CPU 温度</span><b>{data.tempC > 0 ? `${data.tempC.toFixed(1)} ℃` : '—'}</b></div>
           <div><span>硬盘温度</span><b>{data.diskTempC > 0 ? `${data.diskTempC.toFixed(1)} ℃` : '—'}</b></div>
           <div><span>在线用户</span><b>{data.loggedInUsers} 人</b></div>
           <div><span>UPS 电量</span><b>{data.upsBattery >= 0 ? `${data.upsBattery}%` : '未接 UPS'}</b></div>

@@ -24,7 +24,7 @@ type AlertConfig struct {
 	HealthMin    int     `json:"healthMin"`    // 健康指数低于该值告警
 	DiskPct      int     `json:"diskPct"`      // 磁盘使用率阈值（%）
 	MemPct       int     `json:"memPct"`       // 内存使用率阈值（%）
-	TempC        float64 `json:"tempC"`        // CPU/系统最高温度阈值（℃）
+	TempC        float64 `json:"tempC"`        // CPU 温度阈值（℃）
 	DiskTempC    float64 `json:"diskTempC"`    // 硬盘温度阈值（℃）
 	VolumePct    int     `json:"volumePct"`    // 单个分区使用率阈值（%）
 

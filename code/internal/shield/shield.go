@@ -78,7 +78,7 @@ func healthParts(m system.Metrics) []healthPart {
 	}
 	// 温度：45℃ 及以下满分，85℃ 归零
 	if m.TempC > 0 {
-		parts = append(parts, healthPart{"系统温度", clamp01((85-m.TempC)/40) * 100, 10})
+		parts = append(parts, healthPart{"CPU 温度", clamp01((85-m.TempC)/40) * 100, 10})
 	}
 	return parts
 }
