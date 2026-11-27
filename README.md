@@ -2,7 +2,7 @@
 
 > 为飞牛 fnOS NAS 打造的一体化安全面板：真实系统指标、防护开关、网络与服务排障、扫描自动封禁、告警推送与操作审计，全部集中在一个页面里。
 
-![version](https://img.shields.io/badge/version-0.1.69-7c5cff?style=flat-square)
+![version](https://img.shields.io/badge/version-0.1.70-7c5cff?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-fnOS%20%2F%20Linux-2ea043?style=flat-square)
 ![go](https://img.shields.io/badge/Go-1.22-00ADD8?style=flat-square&logo=go&logoColor=white)
 ![react](https://img.shields.io/badge/React-18%20%2B%20Vite-61DAFB?style=flat-square&logo=react&logoColor=black)

@@ -35,6 +35,13 @@ type AlertConfig struct {
 	WatchVolume   bool `json:"watchVolume"`
 	WatchTemp     bool `json:"watchTemp"`
 	WatchDiskTemp bool `json:"watchDiskTemp"`
+
+	// 安全事件推送（默认关闭）：命中后同样写入防护日志并推送 Webhook
+	WatchAutoBan   bool `json:"watchAutoBan"`   // 扫描防护自动封禁 IP 时推送
+	WatchLoginFail bool `json:"watchLoginFail"` // 10 分钟内 SSH 失败登录过多时推送
+	LoginFailCount int  `json:"loginFailCount"` // SSH 失败登录次数阈值（10 分钟窗口）
+	WatchBadAccess bool `json:"watchBadAccess"` // 10 分钟内单个 IP 异常访问过多时推送
+	BadAccessCount int  `json:"badAccessCount"` // 异常访问次数阈值（10 分钟窗口，单个 IP）
 }
 
 // ScanBanConfig 扫描防护：访问日志里异常（4xx / 5xx）请求过多时自动封禁来源 IP。
@@ -67,6 +74,7 @@ func DefaultAlert() AlertConfig {
 		HealthMin: 60, DiskPct: 90, MemPct: 92, TempC: 80, DiskTempC: 65, VolumePct: 92,
 		WatchHealth: true, WatchDisk: true, WatchMem: true,
 		WatchVolume: true, WatchTemp: true, WatchDiskTemp: true,
+		LoginFailCount: 20, BadAccessCount: 60,
 	}
 }
 
@@ -109,6 +117,12 @@ func (c *Config) Normalize() {
 	}
 	if c.Alert.DiskTempC <= 0 || c.Alert.DiskTempC > 100 {
 		c.Alert.DiskTempC = d.DiskTempC
+	}
+	if c.Alert.LoginFailCount < 3 || c.Alert.LoginFailCount > 1000 {
+		c.Alert.LoginFailCount = d.LoginFailCount
+	}
+	if c.Alert.BadAccessCount < 10 || c.Alert.BadAccessCount > 10000 {
+		c.Alert.BadAccessCount = d.BadAccessCount
 	}
 }
 

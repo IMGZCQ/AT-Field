@@ -614,6 +614,8 @@ func (s *Server) StartAutoBan() {
 				}
 			}
 			dur, durText := banDuration(cfg.Duration)
+			var banned []string
+			failed := 0
 			for i, ip := range s.web.RecentBadIPs(10*time.Minute, cfg.Threshold) {
 				if i >= 10 {
 					break
@@ -625,6 +627,7 @@ func (s *Server) StartAutoBan() {
 				if err != nil {
 					// 失败后 30 分钟内不重试，避免每 10 秒刷错误日志
 					cooldown[ip] = now.Add(30 * time.Minute)
+					failed++
 					s.audit.AddDetail(shield.Log{
 						Level: "warn", Module: "扫描防护", Msg: "自动封禁失败：" + err.Error(),
 						Object: ip, Source: "应用", Actor: "系统",
@@ -632,6 +635,7 @@ func (s *Server) StartAutoBan() {
 					continue
 				}
 				cooldown[ip] = now.Add(dur)
+				banned = append(banned, ip)
 				s.sec.Refresh()
 				s.audit.AddDetail(shield.Log{
 					Level: "warn", Module: "扫描防护", Msg: "已自动封禁疑似扫描 IP " + ip,
@@ -639,8 +643,92 @@ func (s *Server) StartAutoBan() {
 					Detail: fmt.Sprintf("触发阈值=%d 次/10 分钟；方式=%s；时长=%s", cfg.Threshold, backend, durText),
 				})
 			}
+			// 配置里的安全事件推送开关：默认关闭，开启后按轮汇总推送一条，避免逐个 IP 刷屏
+			if s.alert != nil && s.store.Config().Alert.WatchAutoBan && (len(banned) > 0 || failed > 0) {
+				s.alert.Notify("auto-ban", "", autoBanSummary(banned, failed, cfg.Threshold, durText))
+			}
 		}
 	}()
+}
+
+// autoBanSummary 汇总一轮扫描防护的封禁结果用于推送；IP 过多时只列前 5 个。
+func autoBanSummary(banned []string, failed, threshold int, durText string) string {
+	var b strings.Builder
+	if len(banned) > 0 {
+		shown := banned
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		b.WriteString("扫描防护已自动封禁 " + strconv.Itoa(len(banned)) + " 个疑似扫描 IP：")
+		b.WriteString(strings.Join(shown, "、"))
+		if len(banned) > len(shown) {
+			b.WriteString(" 等")
+		}
+		b.WriteString("（阈值 " + strconv.Itoa(threshold) + " 次/10 分钟；封禁时长 " + durText + "）")
+	}
+	if failed > 0 {
+		if b.Len() > 0 {
+			b.WriteString("；")
+		}
+		b.WriteString(strconv.Itoa(failed) + " 个 IP 封禁失败，详见防护日志")
+	}
+	return b.String()
+}
+
+// StartSecurityAlerts 启动安全事件推送巡检：每 2 分钟统计最近 10 分钟的 SSH 失败登录
+// 与异常访问（4xx/5xx），达到设置页阈值时推送 Webhook。同类事件 30 分钟内只推一次。
+func (s *Server) StartSecurityAlerts() {
+	if s.alert == nil {
+		return
+	}
+	go func() {
+		t := time.NewTicker(2 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			s.checkSecurityAlerts()
+		}
+	}()
+}
+
+// checkSecurityAlerts 读取配置后分别检查 SSH 失败登录与异常访问，命中阈值即推送。
+func (s *Server) checkSecurityAlerts() {
+	a := s.store.Config().Alert
+	if !a.Monitor || !a.Push {
+		return
+	}
+	if a.WatchLoginFail && s.sec != nil {
+		count, ips := s.sec.FailedIn(10 * time.Minute)
+		if count >= a.LoginFailCount {
+			msg := "最近 10 分钟 SSH 失败登录 " + strconv.Itoa(count) + " 次，超过阈值 " + strconv.Itoa(a.LoginFailCount) + " 次"
+			if len(ips) > 0 {
+				n := len(ips)
+				if n > 3 {
+					n = 3
+				}
+				parts := make([]string, 0, n)
+				for _, it := range ips[:n] {
+					parts = append(parts, it.IP+"（"+strconv.Itoa(it.Count)+" 次）")
+				}
+				msg += "；主要来源：" + strings.Join(parts, "、")
+			}
+			s.alert.Notify("ssh-login-fail", "SSH 防护", msg)
+		}
+	}
+	if a.WatchBadAccess && s.web != nil {
+		ips := s.web.RecentBadIPs(10*time.Minute, a.BadAccessCount)
+		if len(ips) > 0 {
+			shown := ips
+			if len(shown) > 5 {
+				shown = shown[:5]
+			}
+			msg := "最近 10 分钟异常访问（4xx/5xx）达到阈值的 IP " + strconv.Itoa(len(ips)) + " 个：" + strings.Join(shown, "、")
+			if len(ips) > len(shown) {
+				msg += " 等"
+			}
+			msg += "（单个 IP ≥ " + strconv.Itoa(a.BadAccessCount) + " 次）"
+			s.alert.Notify("bad-access", "访问异常", msg)
+		}
+	}
 }
 
 // publicAddress 判断是否为可自动封禁的公网单播地址
@@ -972,6 +1060,15 @@ func describeChanges(old, next store.Config) []string {
 	if old.Alert.Push != next.Alert.Push {
 		out = append(out, "告警消息推送"+onOff(next.Alert.Push))
 	}
+	if old.Alert.WatchAutoBan != next.Alert.WatchAutoBan {
+		out = append(out, "自动封禁事件推送"+onOff(next.Alert.WatchAutoBan))
+	}
+	if old.Alert.WatchLoginFail != next.Alert.WatchLoginFail {
+		out = append(out, "SSH 异常登录推送"+onOff(next.Alert.WatchLoginFail))
+	}
+	if old.Alert.WatchBadAccess != next.Alert.WatchBadAccess {
+		out = append(out, "异常访问推送"+onOff(next.Alert.WatchBadAccess))
+	}
 	if old.Alert.Webhook != next.Alert.Webhook {
 		if next.Alert.Webhook == "" {
 			out = append(out, "已清除飞书 Webhook")
@@ -1001,7 +1098,9 @@ func describeChanges(old, next store.Config) []string {
 		old.Alert.MemPct != next.Alert.MemPct ||
 		old.Alert.TempC != next.Alert.TempC ||
 		old.Alert.DiskTempC != next.Alert.DiskTempC ||
-		old.Alert.VolumePct != next.Alert.VolumePct {
+		old.Alert.VolumePct != next.Alert.VolumePct ||
+		old.Alert.LoginFailCount != next.Alert.LoginFailCount ||
+		old.Alert.BadAccessCount != next.Alert.BadAccessCount {
 		out = append(out, "告警阈值已调整")
 	}
 	return out

@@ -178,7 +178,10 @@ const LineChart = React.memo(function LineChart({ points, height = 220, yMax = 1
       {refs && refs.filter((v) => v <= yMax).map((v) => (
         <g key={`ref-${v}`}>
           <line x1={padL} y1={ys(v)} x2={W - padR} y2={ys(v)} stroke="rgba(255,255,255,0.22)" strokeDasharray="4 6" />
-          <text x={W - padR - 2} y={ys(v) - 5} textAnchor="end" className="ref-label">{v}</text>
+          {/* 标签贴在绘图区左上，避开 Y 轴刻度与右下角末点数值胶囊；与网格刻度重合的值不再重复标注 */}
+          {!gridVals.includes(v) && (
+            <text x={padL + 4} y={ys(v) - 5} textAnchor="start" className="ref-label">{v}%</text>
+          )}
         </g>
       ))}
       <path d={line} fill="none" stroke="#9b79ff" strokeWidth="3.5" strokeLinejoin="round" />
@@ -193,7 +196,7 @@ const LineChart = React.memo(function LineChart({ points, height = 220, yMax = 1
     </svg>
       <div
         className={`chart-current ${badgeBelow ? 'badge-below' : ''}`}
-        style={{ left: `${(lastX / W) * 100}%`, top: `${(lastY / H) * 100}%` }}
+        style={{ '--cx': `${(lastX / W) * 100}%`, top: `${(lastY / H) * 100}%` }}
       >
         {last.percent}%
       </div>
@@ -201,37 +204,30 @@ const LineChart = React.memo(function LineChart({ points, height = 220, yMax = 1
   )
 })
 
-/* ---------- 健康分档环形图 ---------- */
-const HEALTH_BUCKETS = [
-  { label: '优良', min: 85, color: '#43e7ad' },
-  { label: '良好', min: 70, color: '#8b6bff' },
-  { label: '偏高', min: 50, color: '#f0b45c' },
-  { label: '紧张', min: -1, color: '#e0566f' },
-]
+/* ---------- 安全基线得分构成环形图 ---------- */
+const BASELINE_COLORS = ['#43e7ad', '#8b6bff', '#6c9cff', '#f0b45c', '#e0566f', '#b3aada']
 
-const HealthDonut = React.memo(function HealthDonut({ points = [] }) {
-  const vals = points.map((p) => p.percent)
-  const total = vals.length
-  if (!total) return <div className="chart-empty">暂无数据</div>
-  const avg = Math.round(vals.reduce((a, b) => a + b, 0) / total)
-  const min = Math.min(...vals)
-  const counts = [0, 0, 0, 0]
-  vals.forEach((v) => { counts[v >= 85 ? 0 : v >= 70 ? 1 : v >= 50 ? 2 : 3]++ })
+const BaselineDonut = React.memo(function BaselineDonut({ items = [] }) {
+  const list = (items || []).filter((it) => Number(it.max) > 0)
+  if (!list.length) return <div className="chart-empty">暂无数据</div>
+  const total = list.reduce((s, it) => s + Number(it.max), 0)
+  const earned = list.reduce((s, it) => s + Math.min(Number(it.score), Number(it.max)), 0)
   const C = 2 * Math.PI * 70
   let acc = 0
   return (
     <div className="donut-wrap">
       <div className="donut-figure">
-        <svg viewBox="0 0 200 200" className="donut" role="img" aria-label="健康分档占比">
+        <svg viewBox="0 0 200 200" className="donut" role="img" aria-label="安全基线得分构成">
           <circle cx="100" cy="100" r="70" fill="none" stroke="rgba(180,189,255,0.12)" strokeWidth="22" />
-          {HEALTH_BUCKETS.map((b, i) => {
-            const len = (counts[i] / total) * C
+          {list.map((it, i) => {
+            const val = Math.min(Number(it.score), Number(it.max))
+            const len = (val / total) * C
             const draw = Math.max(0, len - 1.5)
             const seg = draw > 0 ? (
               <circle
-                key={b.label}
+                key={it.name}
                 cx="100" cy="100" r="70" fill="none"
-                stroke={b.color} strokeWidth="22"
+                stroke={BASELINE_COLORS[i % BASELINE_COLORS.length]} strokeWidth="22"
                 strokeDasharray={`${draw} ${C - draw}`}
                 strokeDashoffset={-acc}
                 transform="rotate(-90 100 100)"
@@ -242,18 +238,25 @@ const HealthDonut = React.memo(function HealthDonut({ points = [] }) {
           })}
         </svg>
         <div className="donut-center">
-          <b>{avg}<span>%</span></b>
-          <em>平均 · 最低 {min}%</em>
+          <b>{earned}<span> / {total}</span></b>
+          <em>安全基线 · 扣分 {total - earned}</em>
         </div>
       </div>
       <div className="donut-legend">
-        {HEALTH_BUCKETS.map((b, i) => (
-          <span key={b.label}>
-            <i style={{ background: b.color }} />{b.label}
-            <b>{Math.round((counts[i] / total) * 100)}%</b>
-            <em>{counts[i]} 段</em>
+        {list.map((it, i) => (
+          <span key={it.name}>
+            <i style={{ background: BASELINE_COLORS[i % BASELINE_COLORS.length] }} />
+            <em className="donut-name">{it.name}</em>
+            <b>{Math.min(Number(it.score), Number(it.max))}/{Number(it.max)}</b>
           </span>
         ))}
+        {total > earned && (
+          <span>
+            <i style={{ background: 'rgba(180,189,255,0.25)' }} />
+            <em className="donut-name">失分</em>
+            <b>{total - earned}</b>
+          </span>
+        )}
       </div>
     </div>
   )
@@ -1796,6 +1799,9 @@ function Network({ data }) {
 function Health({ data, history, range, onRange }) {
   const [zoom, setZoom] = useState('')
   if (!data) return null
+  const bItems = data.baselineItems || []
+  const bTotal = bItems.reduce((s, it) => s + (Number(it.max) || 0), 0)
+  const bEarned = bItems.reduce((s, it) => s + Math.min(Number(it.score) || 0, Number(it.max) || 0), 0)
   return (
     <div className="page">
       <div className="page-head">
@@ -1827,10 +1833,12 @@ function Health({ data, history, range, onRange }) {
         </div>
         <div className="panel">
           <div className="panel-head">
-            <PanelTitle icon="chart" onZoom={() => setZoom('donut')}>健康分档</PanelTitle>
-            <div className="panel-sub">{history.length} 个采样点 · 分档 85 / 70 / 50</div>
+            <PanelTitle icon="check" onZoom={() => setZoom('baseline')}>安全基线构成</PanelTitle>
+            {bTotal > 0 && (
+              <div className="panel-sub">{bEarned} / {bTotal} 分 · 扣分 {bTotal - bEarned}</div>
+            )}
           </div>
-          <HealthDonut points={history} />
+          <BaselineDonut items={bItems} />
         </div>
       </section>
       <section className="two-col">
@@ -1923,9 +1931,14 @@ function Health({ data, history, range, onRange }) {
           <LineChart points={history} target={data.healthIndex} height={320} range={range} refs={[85, 70, 50]} />
         </ZoomModal>
       )}
-      {zoom === 'donut' && (
-        <ZoomModal title="健康分档" onClose={() => setZoom('')}>
-          <HealthDonut points={history} />
+      {zoom === 'baseline' && (
+        <ZoomModal
+          title="安全基线构成"
+          icon="check"
+          onClose={() => setZoom('')}
+          headRight={bTotal > 0 ? <span className="zoom-sub">{bEarned} / {bTotal} 分 · 扣分 {bTotal - bEarned}</span> : null}
+        >
+          <BaselineDonut items={bItems} />
         </ZoomModal>
       )}
     </div>
@@ -1991,7 +2004,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
         const next = { ...cfg, ...res }
         setCfg(next)
         // 服务端会做范围校验并回落默认值，若与输入不同则明确提示，避免「以为存了」
-        const keys = ['healthMin', 'diskPct', 'memPct', 'volumePct', 'tempC', 'diskTempC']
+        const keys = ['healthMin', 'diskPct', 'memPct', 'volumePct', 'tempC', 'diskTempC', 'loginFailCount', 'badAccessCount']
         const adjusted =
           keys.some((k) => Number(cfg.alert[k]) !== Number(res.alert[k])) ||
           (res.scanBan && Number(scanBan.threshold) !== Number(res.scanBan.threshold))
@@ -2072,8 +2085,8 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
     const al = next.alert
     if (al !== undefined && al !== null) {
       if (typeof al !== 'object' || Array.isArray(al)) return fail('alert 字段格式不对')
-      const alBool = ['monitor', 'push', 'watchHealth', 'watchDisk', 'watchMem', 'watchVolume', 'watchTemp', 'watchDiskTemp']
-      const alNum = ['healthMin', 'diskPct', 'memPct', 'volumePct', 'tempC', 'diskTempC']
+      const alBool = ['monitor', 'push', 'watchHealth', 'watchDisk', 'watchMem', 'watchVolume', 'watchTemp', 'watchDiskTemp', 'watchAutoBan', 'watchLoginFail', 'watchBadAccess']
+      const alNum = ['healthMin', 'diskPct', 'memPct', 'volumePct', 'tempC', 'diskTempC', 'loginFailCount', 'badAccessCount']
       const alStr = ['webhook', 'wecomWebhook', 'feishuSecret', 'dingWebhook', 'dingSecret']
       for (const k of alBool) if (k in al && typeof al[k] !== 'boolean') return fail(`alert.${k} 应为 true / false`)
       for (const k of alNum) if (k in al && (typeof al[k] !== 'number' || !isFinite(al[k]))) return fail(`alert.${k} 应为数字`)
@@ -2313,6 +2326,86 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
             )
           })}
         </div>
+        <div className="panel-sub" style={{ marginTop: 12 }}>
+          安全事件推送（需同时开启上方「监控与告警」与「消息推送」，同类事件 30 分钟内只推一次）
+        </div>
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">自动封禁 IP 通知</div>
+            <div className="setting-desc">扫描防护自动封禁疑似扫描 IP 时推送汇总，含 IP、触发阈值与封禁时长</div>
+          </div>
+          <button
+            className={`switch ${alert.watchAutoBan && alert.monitor ? 'switch-on' : ''}`}
+            title={alert.monitor ? '' : '请先开启「监控与告警」'}
+            onClick={() => setAlert({ watchAutoBan: !alert.watchAutoBan })}
+          >
+            <span className="switch-knob" />
+          </button>
+        </div>
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">SSH 异常登录提醒</div>
+            <div className="setting-desc">最近 10 分钟失败登录达到设定次数时推送，附尝试最多的来源 IP</div>
+          </div>
+          <div className="alert-inline">
+            <input
+              className="text-input alert-num"
+              type="number"
+              min={3}
+              max={1000}
+              step="1"
+              disabled={!alert.monitor || !alert.watchLoginFail}
+              title="有效范围 3 - 1000 次"
+              value={alert.loginFailCount ?? ''}
+              onChange={(e) => setAlert({ loginFailCount: e.target.value === '' ? '' : Number(e.target.value) })}
+              onBlur={(e) => {
+                let v = Number(e.target.value)
+                if (e.target.value === '' || Number.isNaN(v)) v = 20
+                v = Math.min(1000, Math.max(3, Math.round(v)))
+                if (v !== alert.loginFailCount) setAlert({ loginFailCount: v })
+              }}
+            />
+            <button
+              className={`switch ${alert.watchLoginFail && alert.monitor ? 'switch-on' : ''}`}
+              title={alert.monitor ? '' : '请先开启「监控与告警」'}
+              onClick={() => setAlert({ watchLoginFail: !alert.watchLoginFail })}
+            >
+              <span className="switch-knob" />
+            </button>
+          </div>
+        </div>
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">异常访问突增提醒</div>
+            <div className="setting-desc">单个 IP 在 10 分钟内 4xx / 5xx 达到设定次数时推送，不依赖是否开启自动封禁</div>
+          </div>
+          <div className="alert-inline">
+            <input
+              className="text-input alert-num"
+              type="number"
+              min={10}
+              max={10000}
+              step="1"
+              disabled={!alert.monitor || !alert.watchBadAccess}
+              title="有效范围 10 - 10000 次"
+              value={alert.badAccessCount ?? ''}
+              onChange={(e) => setAlert({ badAccessCount: e.target.value === '' ? '' : Number(e.target.value) })}
+              onBlur={(e) => {
+                let v = Number(e.target.value)
+                if (e.target.value === '' || Number.isNaN(v)) v = 60
+                v = Math.min(10000, Math.max(10, Math.round(v)))
+                if (v !== alert.badAccessCount) setAlert({ badAccessCount: v })
+              }}
+            />
+            <button
+              className={`switch ${alert.watchBadAccess && alert.monitor ? 'switch-on' : ''}`}
+              title={alert.monitor ? '' : '请先开启「监控与告警」'}
+              onClick={() => setAlert({ watchBadAccess: !alert.watchBadAccess })}
+            >
+              <span className="switch-knob" />
+            </button>
+          </div>
+        </div>
         <div className="btn-row">
           <button className="btn" onClick={testAlert}>发送测试消息</button>
           <button className={`btn btn-save ${dirty ? 'btn-dirty' : ''}`} onClick={save}>
@@ -2325,6 +2418,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
           阈值触发后写入防护日志；填写 Webhook 后同时推送到飞书 / 企业微信 / 钉钉（填几个就各推一份），同一告警 30 分钟内只推送一次，应用重启后冷却时间仍然有效。
           Webhook 仅接受 https 的飞书 / 企业微信 / 钉钉官方机器人地址；机器人开启签名（飞书）或加签（钉钉）时，需同时填写密钥；推送失败（含重试 2 次）会记入防护日志。
           指标进入告警时推送一条通知，回落到阈值以下会再推一条「已恢复」，其中磁盘/内存/温度严重超限会标记为严重级别。
+          安全事件部分默认关闭：开启「自动封禁 IP 通知」后，扫描防护每轮封禁会汇总推送一条；开启「SSH 异常登录提醒」或「异常访问突增提醒」后，后台每 2 分钟按最近 10 分钟窗口检查一次，达到设定次数即推送，同类事件 30 分钟内只推一次。
           <b> 以上阈值与 Webhook 都要点「保存设置」才会写入配置并生效。</b>
         </p>
       </section>

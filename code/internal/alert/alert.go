@@ -29,6 +29,10 @@ import (
 // cooldown 同一条告警的抑制时间
 const cooldown = 30 * time.Minute
 
+// eventCooldown 安全事件推送的抑制时间：同一类事件（按 key 区分）在该时间内只推一次，
+// 避免扫描 / 爆破持续期间反复刷屏。
+const eventCooldown = 30 * time.Minute
+
 // stateFile 落盘结构：last 记录上次触发时间（冷却用），active 记录当前处于告警中的项，
 // 用于跨重启恢复状态，避免重启后重复推送、漏发恢复通知。
 type stateFile struct {
@@ -310,6 +314,37 @@ func (e *Evaluator) transition(c cond) {
 	}
 	// 消息推送已关闭：照常写日志，只是不发 webhook
 	if e.cfg != nil && !e.cfg().Alert.Push {
+		return
+	}
+	for _, h := range e.hooks() {
+		e.pushAsync(h, msg)
+	}
+}
+
+// Notify 推送一条安全事件通知（自动封禁 / SSH 异常登录 / 异常访问等）。
+// 受「监控与告警」「消息推送」两个开关约束；同类事件 30 分钟内只推送一次。
+// module 为空表示调用方已自行写入审计日志，这里不再重复记录。
+func (e *Evaluator) Notify(key, module, msg string) {
+	a := store.DefaultAlert()
+	if e.cfg != nil {
+		a = e.cfg().Alert
+	}
+	if !a.Monitor {
+		return
+	}
+	e.mu.Lock()
+	if t, ok := e.lastFired[key]; ok && time.Since(t) < eventCooldown {
+		e.mu.Unlock()
+		return
+	}
+	e.lastFired[key] = time.Now()
+	e.saveStateLocked()
+	e.mu.Unlock()
+
+	if module != "" && e.au != nil {
+		e.au.AddDetail(shield.Log{Level: "warn", Module: module, Msg: msg, Source: "告警", Actor: "系统"})
+	}
+	if !a.Push {
 		return
 	}
 	for _, h := range e.hooks() {

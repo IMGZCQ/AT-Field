@@ -618,6 +618,8 @@ body {
 /* 末点数值胶囊：HTML 元素，字号固定不随图表缩放 */
 .chart-current {
   position: absolute;
+  /* 窄屏时向左收，保证气泡不探出卡片；--cx 由组件按末点位置注入 */
+  left: clamp(34px, var(--cx, 50%), calc(100% - 34px));
   transform: translate(-50%, -100%);
   margin-top: -12px;
   padding: 6px 14px;
@@ -1056,6 +1058,9 @@ body {
 .thr-off .thr-label span { color: var(--text-faint); text-decoration: line-through; }
 .thr-off .text-input { opacity: 0.45; }
 .test-msg { color: var(--text-dim); font-size: 12.5px; }
+/* 安全事件推送：阈值输入框与开关并排放在设置行右侧 */
+.alert-inline { display: flex; align-items: center; gap: 10px; flex: none; }
+.alert-num { width: 88px; text-align: right; }
 /* 导出 / 导入配置的结果提示：贴在按钮下方，成功与失败共用一条，靠文案区分 */
 .io-msg {
   margin-top: 10px;
@@ -1327,21 +1332,32 @@ html.is-hidden .live-dot {
 .donut-legend { display: flex; flex-direction: column; gap: 9px; flex: 1; min-width: 0; }
 .donut-legend > span { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-dim); }
 .donut-legend i { width: 8px; height: 8px; border-radius: 3px; flex: none; }
-.donut-legend b { color: var(--text); font-size: 13.5px; font-variant-numeric: tabular-nums; margin-left: auto; }
-.donut-legend em { font-style: normal; color: var(--text-faint); font-size: 11.5px; min-width: 38px; text-align: right; }
+.donut-legend b { color: var(--text); font-size: 13.5px; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+.donut-legend .donut-name {
+  flex: 1;
+  min-width: 0;
+  font-style: normal;
+  color: var(--text-dim);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* 放大弹层里环形图更大 */
 .zoom-body .donut-wrap { justify-content: center; gap: 36px; padding: 10px 0; }
 .zoom-body .donut-figure { width: 260px; height: 260px; }
 .zoom-body .donut-center b { font-size: 46px; }
 .zoom-body .donut-center em { font-size: 13px; }
-.zoom-body .donut-legend { flex: 0 0 auto; min-width: 150px; }
+.zoom-body .donut-legend { flex: 0 0 auto; min-width: 190px; }
 .zoom-body .donut-legend > span { font-size: 14.5px; gap: 9px; }
 @media (max-width: 560px) {
   .donut-wrap { gap: 14px; }
   .donut-figure { width: 146px; height: 146px; }
   .donut-center b { font-size: 26px; }
   .zoom-body .donut-figure { width: 200px; height: 200px; }
-  .zoom-body .donut-wrap { gap: 20px; }
+  /* 手机上放大层改为上下排列，200px 圆环 + 图例竖排不挤在一行 */
+  .zoom-body .donut-wrap { flex-direction: column; gap: 14px; }
+  .zoom-body .donut-legend { flex: 0 0 auto; width: 100%; max-width: 230px; }
 }
 
 /* ---------- 列表/面板交互微调 ---------- */

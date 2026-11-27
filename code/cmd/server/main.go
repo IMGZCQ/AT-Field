@@ -77,6 +77,7 @@ func main() {
 	api.Version = Version
 	handler := api.New(st, coll, au, sec, evaluator, web, frontend.Dist(), config.BasePath())
 	handler.StartAutoBan()
+	handler.StartSecurityAlerts()
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 15 * time.Second}
 
 	listeners := make([]net.Listener, 0, 2)
