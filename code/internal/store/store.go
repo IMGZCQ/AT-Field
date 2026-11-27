@@ -38,17 +38,17 @@ type AlertConfig struct {
 
 	// 安全事件推送（默认关闭）：命中后同样写入防护日志并推送 Webhook
 	WatchAutoBan   bool `json:"watchAutoBan"`   // 扫描防护自动封禁 IP 时推送
-	WatchLoginFail bool `json:"watchLoginFail"` // 10 分钟内 SSH 失败登录过多时推送
-	LoginFailCount int  `json:"loginFailCount"` // SSH 失败登录次数阈值（10 分钟窗口）
-	WatchBadAccess bool `json:"watchBadAccess"` // 10 分钟内单个 IP 异常访问过多时推送
-	BadAccessCount int  `json:"badAccessCount"` // 异常访问次数阈值（10 分钟窗口，单个 IP）
+	WatchLoginFail bool `json:"watchLoginFail"` // 1 分钟内 SSH 失败登录过多时推送
+	LoginFailCount int  `json:"loginFailCount"` // SSH 失败登录次数阈值（1 分钟窗口）
+	WatchBadAccess bool `json:"watchBadAccess"` // 1 分钟内单个 IP 异常访问过多时推送
+	BadAccessCount int  `json:"badAccessCount"` // 异常访问次数阈值（1 分钟窗口，单个 IP）
 }
 
 // ScanBanConfig 扫描防护：访问日志里异常（4xx / 5xx）请求过多时自动封禁来源 IP。
 // 默认关闭，需在设置页手动开启。
 type ScanBanConfig struct {
 	Enabled   bool   `json:"enabled"`
-	Threshold int    `json:"threshold"` // 10 分钟内的异常请求次数阈值
+	Threshold int    `json:"threshold"` // 1 分钟内的异常请求次数阈值
 	Duration  string `json:"duration"`  // 1h | 24h | 7d | 365d
 }
 
@@ -64,7 +64,7 @@ type Config struct {
 
 // DefaultScanBan 返回默认扫描防护设置（关闭）
 func DefaultScanBan() ScanBanConfig {
-	return ScanBanConfig{Enabled: false, Threshold: 60, Duration: "24h"}
+	return ScanBanConfig{Enabled: false, Threshold: 10, Duration: "24h"}
 }
 
 // DefaultAlert 返回默认告警设置
@@ -88,6 +88,10 @@ func (c *Config) Normalize() {
 	d := DefaultAlert()
 	ds := DefaultScanBan()
 	if c.ScanBan.Threshold < 10 || c.ScanBan.Threshold > 10000 {
+		c.ScanBan.Threshold = ds.Threshold
+	}
+	// 0.1.71 起统计窗口由 10 分钟改为 1 分钟：仍是旧默认值 60 的配置跟随新默认 10
+	if c.ScanBan.Threshold == 60 {
 		c.ScanBan.Threshold = ds.Threshold
 	}
 	switch c.ScanBan.Duration {

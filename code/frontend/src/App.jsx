@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from './api.js'
 import worldMap from './worldMap.js'
+import chinaMap from './chinaMap.js'
 
 import appIcon from './assets/icon.png'
 import appIconHd from './assets/ui/app_icon_hd.png'
@@ -501,55 +502,127 @@ const WebChart = React.memo(function WebChart({ points, range = '1d', height = 2
   )
 })
 
-/* ---------- 世界地图（按访问量填色） ---------- */
+/* ---------- 来源地区地图（世界按国家填色，可下钻中国省级） ---------- */
 // 主色 #88D450；无数据国家用深底，保证大陆轮廓仍可辨认
 const MAP_RGB = '136,212,80'
 const MAP_BASE = '#252b4d'
-const WorldMap = React.memo(function WorldMap({ items = [] }) {
-  // 点击国家后固定显示次数（移动端没有悬停，点击更直观）
+
+// 34 个省级短名，与 chinaMap.js 的 name 保持一致
+const PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆', '台湾', '香港', '澳门']
+// ip-api 的 regionName 可能是英文 / 拼音，补一份别名映射
+const PROVINCE_ALIAS = {
+  beijing: '北京', tianjin: '天津', hebei: '河北', shanxi: '山西', innermongolia: '内蒙古', mongolia: '内蒙古', neimenggu: '内蒙古', neimongol: '内蒙古',
+  liaoning: '辽宁', jilin: '吉林', heilongjiang: '黑龙江', shanghai: '上海', jiangsu: '江苏', zhejiang: '浙江', anhui: '安徽',
+  fujian: '福建', jiangxi: '江西', shandong: '山东', henan: '河南', hubei: '湖北', hunan: '湖南', guangdong: '广东', guangxi: '广西',
+  hainan: '海南', chongqing: '重庆', sichuan: '四川', guizhou: '贵州', yunnan: '云南', tibet: '西藏', xizang: '西藏', shaanxi: '陕西',
+  gansu: '甘肃', qinghai: '青海', ningxia: '宁夏', xinjiang: '新疆', taiwan: '台湾', hongkong: '香港', macau: '澳门', macao: '澳门',
+}
+
+// 把 ip-api 的 regionName 归一化为省级短名；无法识别时返回空串
+function provinceName(region) {
+  if (!region) return ''
+  let s = String(region).trim()
+  // 去掉行政区后缀，如「广东省」「内蒙古自治区」「香港特别行政区」
+  s = s.replace(/(壮族自治区|回族自治区|维吾尔自治区|特别行政区|自治区|省|市)$/, '')
+  s = s.replace(/(壮族|回族|维吾尔)$/, '')
+  if (PROVINCES.includes(s)) return s
+  const key = s.toLowerCase().replace(/[\s_-]/g, '')
+  if (PROVINCE_ALIAS[key]) return PROVINCE_ALIAS[key]
+  // 兜底：以省份名开头（如「广东深圳」这类拼接值）
+  return PROVINCES.find((p) => s.startsWith(p)) || ''
+}
+
+const WorldMap = React.memo(function WorldMap({ items = [], provinces = [], mode = 'world', onModeChange, cnTotal = 0 }) {
+  // 点击国家 / 省份后固定显示次数（移动端没有悬停，点击更直观）
   const [picked, setPicked] = useState('')
-  // 按 ISO alpha-2 汇总；内网 / 未知没有国家代码，天然不进入地图
+  // 切换世界 / 中国视图时清掉选中项，避免气泡残留
+  useEffect(() => { setPicked('') }, [mode])
+  const isCN = mode === 'cn'
+  // 世界模式按 ISO alpha-2 汇总；内网 / 未知没有国家代码，天然不进入地图
   const byCode = new Map()
   const nameByCode = new Map()
-  items.forEach((it) => {
-    const code = (it.code || '').toLowerCase()
-    if (!code) return
-    byCode.set(code, (byCode.get(code) || 0) + it.count)
-    nameByCode.set(code, it.name)
-  })
-  const max = Math.max(1, ...byCode.values())
-  const pick = picked ? worldMap.locations.find((l) => l.id === picked) : null
-  const pickName = pick ? (nameByCode.get(pick.id) || pick.name) : ''
-  const pickN = pick ? (byCode.get(pick.id) || 0) : 0
+  if (!isCN) {
+    items.forEach((it) => {
+      const code = (it.code || '').toLowerCase()
+      if (!code) return
+      byCode.set(code, (byCode.get(code) || 0) + it.count)
+      nameByCode.set(code, it.name)
+    })
+  }
+  // 中国模式按省级短名汇总
+  const byProv = new Map()
+  if (isCN) provinces.forEach((it) => byProv.set(it.name, (byProv.get(it.name) || 0) + it.count))
+  const data = isCN ? chinaMap : worldMap
+  const max = Math.max(1, ...(isCN ? byProv.values() : byCode.values()))
+  const pick = picked ? data.locations.find((l) => l.id === picked || l.name === picked) : null
+  const pickName = pick ? (isCN ? pick.name : (nameByCode.get(pick.id) || pick.name)) : ''
+  const pickN = pick ? (isCN ? (byProv.get(pick.name) || 0) : (byCode.get(pick.id) || 0)) : 0
+  const countOf = (loc) => (isCN ? (byProv.get(loc.name) || 0) : (byCode.get(loc.id) || 0))
   return (
     <>
-      <svg viewBox={worldMap.viewBox} className="world-map" preserveAspectRatio="xMidYMid meet" role="img" aria-label="来源地区分布地图">
-        {worldMap.locations.map((loc) => {
-          const n = byCode.get(loc.id) || 0
+      <svg
+        viewBox={data.viewBox}
+        className={`world-map${isCN ? ' china-map' : ''}`}
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label={isCN ? '中国省级来源分布地图' : '来源地区分布地图'}
+      >
+        {data.locations.map((loc) => {
+          const n = countOf(loc)
           // 开方让少量访问也能看出颜色，又不至于高访问量国家一片死白
           const fill = n ? `rgba(${MAP_RGB},${(0.16 + 0.78 * Math.sqrt(n / max)).toFixed(3)})` : MAP_BASE
-          const label = nameByCode.get(loc.id) || loc.name
+          if (!isCN) {
+            const label = nameByCode.get(loc.id) || loc.name
+            const canDrill = loc.id === 'cn' && !!onModeChange
+            return (
+              <path
+                key={loc.id}
+                d={loc.d}
+                fill={fill}
+                stroke={canDrill ? 'rgba(136,212,80,0.55)' : (picked === loc.id ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.07)')}
+                strokeWidth="1"
+                vectorEffect="non-scaling-stroke"
+                onClick={() => (canDrill ? onModeChange('cn') : setPicked(loc.id))}
+              >
+                <title>{canDrill ? '点击查看中国省级分布' : (n ? `${label} · ${n} 次` : `${label} · 暂无记录`)}</title>
+              </path>
+            )
+          }
           return (
             <path
-              key={loc.id}
+              key={loc.name}
               d={loc.d}
               fill={fill}
-              stroke={picked === loc.id ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.07)'}
+              stroke={picked === loc.name ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.07)'}
               strokeWidth="1"
               vectorEffect="non-scaling-stroke"
-              onClick={() => setPicked(loc.id)}
+              onClick={() => setPicked(loc.name)}
             >
-              <title>{n ? `${label} · ${n} 次` : `${label} · 暂无记录`}</title>
+              <title>{n ? `${loc.name} · ${n} 次` : `${loc.name} · 暂无记录`}</title>
             </path>
           )
         })}
       </svg>
-      {pick && (
+      {isCN && onModeChange && (
+        <button type="button" className="map-back" onClick={() => onModeChange('world')}>← 返回世界</button>
+      )}
+      {isCN ? (
+        <div className="map-pick">
+          {pick ? (
+            <>
+              <span>{pickName} · {pickN ? `${pickN} 次` : '暂无记录'}</span>
+              <button type="button" className="map-pick-x" aria-label="关闭" onClick={() => setPicked('')}>×</button>
+            </>
+          ) : (
+            <span>中国 · {cnTotal ? `${cnTotal} 次` : '暂无记录'}</span>
+          )}
+        </div>
+      ) : pick ? (
         <div className="map-pick">
           <span>{pickName} · {pickN ? `${pickN} 次` : '暂无记录'}</span>
           <button type="button" className="map-pick-x" aria-label="关闭" onClick={() => setPicked('')}>×</button>
         </div>
-      )}
+      ) : null}
     </>
   )
 })
@@ -907,6 +980,8 @@ const statusTone = (code) => {
 function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [], onBanScans, scanActing, scanMsg }) {
   const [open, setOpen] = useState('')
   const [zoom, setZoom] = useState('')
+  // 来源地区地图：world 世界视图 / cn 中国省级视图，面板与放大层共用，保证下钻状态同步
+  const [mapMode, setMapMode] = useState('world')
   const p2 = (n) => String(n).padStart(2, '0')
   const isDay = range === '7d' || range === '30d'
   const fmtWin = (ts) => {
@@ -924,6 +999,24 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
   const paths = data.paths || []
   const statuses = data.statuses || []
   const countries = data.countries || []
+  // 中国省级分布：复用 Top IP 的归属地（region），内网 / 无法识别的不计入
+  const provMap = new Map()
+  ips.forEach((it) => {
+    if (it.internal) return
+    const code = (it.code || '').toLowerCase()
+    let name = ''
+    if (code === 'hk') name = '香港'
+    else if (code === 'mo') name = '澳门'
+    else if (code === 'tw') name = '台湾'
+    else if (code === 'cn' || /中国/.test(it.country || '')) name = provinceName(it.region)
+    if (!name) return
+    provMap.set(name, (provMap.get(name) || 0) + (it.count || 0))
+  })
+  const provinces = [...provMap].map(([name, count]) => ({ name, count }))
+  // 中国总访问量（含港澳台等归属中国的条目），用于中国视图左下角默认显示
+  const cnTotal = countries
+    .filter((c) => (c.code || '').toLowerCase() === 'cn' || /中国/.test(c.name || ''))
+    .reduce((a, c) => a + (c.count || 0), 0)
   const scans = data.scans || []
   const total = data.total || 0
   const bad = data.bad != null ? data.bad : statuses.filter((s) => /^[45]/.test(s.code)).reduce((a, s) => a + s.count, 0)
@@ -982,7 +1075,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
               <WebChart points={data.points || []} range={range} />
             </div>
 
-            <div className="panel">
+            <div className="panel map-panel">
               <div className="panel-head">
                 <PanelTitle icon="net" onZoom={() => setZoom('map')}>来源地区地图</PanelTitle>
                 <div className="map-legend">
@@ -992,7 +1085,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
                 </div>
               </div>
               <div className="world-map-wrap">
-                <WorldMap items={countries} />
+                <WorldMap items={countries} provinces={provinces} mode={mapMode} onModeChange={setMapMode} cnTotal={cnTotal} />
               </div>
             </div>
           </section>
@@ -1168,7 +1261,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
           }
         >
           <div className="world-map-wrap">
-            <WorldMap items={countries} />
+            <WorldMap items={countries} provinces={provinces} mode={mapMode} onModeChange={setMapMode} cnTotal={cnTotal} />
           </div>
         </ZoomModal>
       )}
@@ -1991,7 +2084,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
     setDirty(true)
   }
   // 扫描防护：默认关闭，服务端会校验阈值（10~10000）与封禁时长白名单
-  const scanBan = cfg.scanBan || { enabled: false, threshold: 60, duration: '24h' }
+  const scanBan = cfg.scanBan || { enabled: false, threshold: 10, duration: '24h' }
   const setScanBan = (patch) => {
     setCfg({ ...cfg, scanBan: { ...scanBan, ...patch } })
     setSaved(false)
@@ -2149,7 +2242,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
             <div className="setting-title">自动封禁疑似扫描 IP</div>
             <div className="setting-desc">
               {scanBan.enabled
-                ? `已开启：每 10 秒检查一次访问日志，10 分钟内异常请求达到 ${scanBan.threshold} 次的公网 IP 自动封禁 ${banDurLabel(scanBan.duration)}`
+                ? `已开启：每 10 秒检查一次访问日志，1 分钟内异常请求达到 ${scanBan.threshold} 次的公网 IP 自动封禁 ${banDurLabel(scanBan.duration)}`
                 : '已关闭：仅在「访问分析」里标记疑似扫描 IP，需手动封禁'}
             </div>
           </div>
@@ -2158,7 +2251,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
           </button>
         </div>
         <div className="form-row">
-          <label className="form-label">异常请求阈值（次 / 10 分钟）</label>
+          <label className="form-label">异常请求阈值（次 / 1 分钟）</label>
           <input
             className="text-input"
             type="number"
@@ -2170,7 +2263,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
             onChange={(e) => setScanBan({ threshold: e.target.value === '' ? '' : Number(e.target.value) })}
             onBlur={(e) => {
               let v = Number(e.target.value)
-              if (e.target.value === '' || !isFinite(v)) v = 60
+              if (e.target.value === '' || !isFinite(v)) v = 10
               v = Math.min(10000, Math.max(10, Math.round(v)))
               if (v !== scanBan.threshold) setScanBan({ threshold: v })
             }}
@@ -2345,7 +2438,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
         <div className="setting-row">
           <div>
             <div className="setting-title">SSH 异常登录提醒</div>
-            <div className="setting-desc">最近 10 分钟失败登录达到设定次数时推送，附尝试最多的来源 IP</div>
+            <div className="setting-desc">最近 1 分钟失败登录达到设定次数时推送，附尝试最多的来源 IP</div>
           </div>
           <div className="alert-inline">
             <input
@@ -2377,7 +2470,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
         <div className="setting-row">
           <div>
             <div className="setting-title">异常访问突增提醒</div>
-            <div className="setting-desc">单个 IP 在 10 分钟内 4xx / 5xx 达到设定次数时推送，不依赖是否开启自动封禁</div>
+            <div className="setting-desc">单个 IP 在 1 分钟内 4xx / 5xx 达到设定次数时推送，不依赖是否开启自动封禁</div>
           </div>
           <div className="alert-inline">
             <input
@@ -2418,7 +2511,7 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
           阈值触发后写入防护日志；填写 Webhook 后同时推送到飞书 / 企业微信 / 钉钉（填几个就各推一份），同一告警 30 分钟内只推送一次，应用重启后冷却时间仍然有效。
           Webhook 仅接受 https 的飞书 / 企业微信 / 钉钉官方机器人地址；机器人开启签名（飞书）或加签（钉钉）时，需同时填写密钥；推送失败（含重试 2 次）会记入防护日志。
           指标进入告警时推送一条通知，回落到阈值以下会再推一条「已恢复」，其中磁盘/内存/温度严重超限会标记为严重级别。
-          安全事件部分默认关闭：开启「自动封禁 IP 通知」后，扫描防护每轮封禁会汇总推送一条；开启「SSH 异常登录提醒」或「异常访问突增提醒」后，后台每 2 分钟按最近 10 分钟窗口检查一次，达到设定次数即推送，同类事件 30 分钟内只推一次。
+          安全事件部分默认关闭：开启「自动封禁 IP 通知」后，扫描防护每轮封禁会汇总推送一条；开启「SSH 异常登录提醒」或「异常访问突增提醒」后，后台每 30 秒按最近 1 分钟窗口检查一次，达到设定次数即推送，同类事件 30 分钟内只推一次。
           <b> 以上阈值与 Webhook 都要点「保存设置」才会写入配置并生效。</b>
         </p>
       </section>

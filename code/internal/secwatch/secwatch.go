@@ -281,16 +281,21 @@ func scanFailedLogins(win time.Duration) (int, []FailIP, []Event) {
 		return count, topFailIPs(agg), events
 	}
 
-	hours := int(win / time.Hour)
-	if hours < 1 {
-		hours = 1
+	// since 精度按窗口选择：短窗口用分钟，避免为 1 分钟窗口去拉一小时的日志
+	since := "-" + strconv.Itoa(int(win/time.Hour)) + "h"
+	if win < time.Hour {
+		mins := int(win / time.Minute)
+		if mins < 1 {
+			mins = 1
+		}
+		since = "-" + strconv.Itoa(mins) + "min"
 	}
 	nLines := 500
 	if win > 24*time.Hour {
 		nLines = 3000
 	}
 	out, ok := run(5*time.Second, "journalctl", "-u", "ssh", "-u", "sshd", "-u", "sshd@*",
-		"--since", "-"+strconv.Itoa(hours)+"h", "-o", "short-iso", "-n", strconv.Itoa(nLines), "--no-pager")
+		"--since", since, "-o", "short-iso", "-n", strconv.Itoa(nLines), "--no-pager")
 	if !ok {
 		return 0, nil, nil
 	}
@@ -308,6 +313,9 @@ func scanFailedLogins(win time.Duration) (int, []FailIP, []Event) {
 			if v, err := parseLogTime(f[0]); err == nil {
 				ts = v
 			}
+		}
+		if time.Since(ts) > win {
+			continue
 		}
 		addHit(ip, user, ts.Unix())
 	}

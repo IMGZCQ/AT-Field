@@ -538,12 +538,18 @@ body {
 .zoom-head-right { display: flex; align-items: center; gap: 12px; }
 .zoom-sub { font-size: 12.5px; color: var(--text-dim); }
 .zoom-body { padding: 14px 16px 16px; overflow: auto; }
-.zoom-body .world-map { height: min(58vh, 520px); }
+/* 放大层：地图按可用宽度铺满，同时用视口高度反算宽度上限，避免缩成中间一小块 */
+.zoom-body .world-map {
+  width: min(100%, calc((94vh - 104px) * 1.5165));
+  height: auto;
+  margin: 0 auto;
+}
+/* 中国省级视图比例为 785×561，单独反算宽度上限，避免放大层纵向溢出 */
+.zoom-body .world-map.china-map { width: min(100%, calc((94vh - 104px) * 1.3993)); }
 @media (max-width: 720px) {
   .zoom-mask { padding: 8px; }
   .zoom-dialog { max-height: 96vh; }
   .zoom-body { padding: 10px 10px 12px; }
-  .zoom-body .world-map { height: min(52vh, 420px); }
 }
 
 /* ---------- 时间范围选择 ---------- */
@@ -1636,6 +1642,11 @@ html.is-hidden .live-dot {
 /* 访问分析：来源地区填色地图（高度固定，避免按宽度放大把整页拉长） */
 .world-map-wrap { position: relative; }
 .world-map { display: block; width: 100%; height: 210px; }
+/* 与较高的趋势图同行时，面板高度由同行图表决定；这里只让地图填满面板已有空间，
+   用绝对定位避免 SVG 按自身比例反过来把整行撑高（那会把左侧趋势图拉出一大块空白） */
+.two-col.even > .panel.map-panel { display: flex; flex-direction: column; }
+.two-col.even > .panel.map-panel .world-map-wrap { flex: 1 1 auto; min-height: 210px; }
+.two-col.even > .panel.map-panel .world-map { position: absolute; inset: 0; width: 100%; height: 100%; }
 .world-map path { cursor: pointer; transition: fill 0.2s ease; }
 .world-map path:hover { stroke: rgba(255, 255, 255, 0.45); }
 /* 图例与标题同一行（右上角）；点击国家后在左下角固定显示次数 */
@@ -1656,6 +1667,16 @@ html.is-hidden .live-dot {
   font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px;
 }
 .map-pick-x:hover { color: #fff; }
+/* 中国省级视图：左上角「返回世界」 */
+.map-back {
+  position: absolute; left: 4px; top: 4px;
+  padding: 3px 9px; border-radius: 8px;
+  font-size: 12px; color: #d8f5c0; cursor: pointer;
+  background: rgba(18, 22, 45, 0.86);
+  border: 1px solid rgba(136, 212, 80, 0.35);
+  transition: background 0.2s, border-color 0.2s;
+}
+.map-back:hover { background: rgba(30, 40, 62, 0.92); border-color: rgba(136, 212, 80, 0.6); }
 @media (max-width: 720px) {
   .map-legend { gap: 8px; font-size: 11px; }
   .map-pick { font-size: 11.5px; }

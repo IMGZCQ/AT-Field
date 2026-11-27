@@ -592,7 +592,7 @@ func (s *Server) ipAction(w http.ResponseWriter, r *http.Request, ban bool) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ip": ip, "banned": ban, "backend": backend, "duration": durText})
 }
 
-// StartAutoBan 启动「扫描防护」后台巡检：每 10 秒读一次配置，开启时把近 10 分钟内
+// StartAutoBan 启动「扫描防护」后台巡检：每 10 秒读一次配置，开启时把近 1 分钟内
 // 异常请求次数达到阈值的公网 IP 自动封禁。只处理公网单播地址，回环 / 内网 / 链路本地
 // 一律跳过，避免把 NAS 自身或局域网设备挡在门外。进程退出时无需特别清理。
 func (s *Server) StartAutoBan() {
@@ -616,7 +616,7 @@ func (s *Server) StartAutoBan() {
 			dur, durText := banDuration(cfg.Duration)
 			var banned []string
 			failed := 0
-			for i, ip := range s.web.RecentBadIPs(10*time.Minute, cfg.Threshold) {
+			for i, ip := range s.web.RecentBadIPs(time.Minute, cfg.Threshold) {
 				if i >= 10 {
 					break
 				}
@@ -640,7 +640,7 @@ func (s *Server) StartAutoBan() {
 				s.audit.AddDetail(shield.Log{
 					Level: "warn", Module: "扫描防护", Msg: "已自动封禁疑似扫描 IP " + ip,
 					Object: ip, Source: "应用", Actor: "系统",
-					Detail: fmt.Sprintf("触发阈值=%d 次/10 分钟；方式=%s；时长=%s", cfg.Threshold, backend, durText),
+					Detail: fmt.Sprintf("触发阈值=%d 次/分钟；方式=%s；时长=%s", cfg.Threshold, backend, durText),
 				})
 			}
 			// 配置里的安全事件推送开关：默认关闭，开启后按轮汇总推送一条，避免逐个 IP 刷屏
@@ -664,7 +664,7 @@ func autoBanSummary(banned []string, failed, threshold int, durText string) stri
 		if len(banned) > len(shown) {
 			b.WriteString(" 等")
 		}
-		b.WriteString("（阈值 " + strconv.Itoa(threshold) + " 次/10 分钟；封禁时长 " + durText + "）")
+		b.WriteString("（阈值 " + strconv.Itoa(threshold) + " 次/分钟；封禁时长 " + durText + "）")
 	}
 	if failed > 0 {
 		if b.Len() > 0 {
@@ -675,14 +675,14 @@ func autoBanSummary(banned []string, failed, threshold int, durText string) stri
 	return b.String()
 }
 
-// StartSecurityAlerts 启动安全事件推送巡检：每 2 分钟统计最近 10 分钟的 SSH 失败登录
+// StartSecurityAlerts 启动安全事件推送巡检：每 30 秒统计最近 1 分钟的 SSH 失败登录
 // 与异常访问（4xx/5xx），达到设置页阈值时推送 Webhook。同类事件 30 分钟内只推一次。
 func (s *Server) StartSecurityAlerts() {
 	if s.alert == nil {
 		return
 	}
 	go func() {
-		t := time.NewTicker(2 * time.Minute)
+		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
 		for range t.C {
 			s.checkSecurityAlerts()
@@ -697,9 +697,9 @@ func (s *Server) checkSecurityAlerts() {
 		return
 	}
 	if a.WatchLoginFail && s.sec != nil {
-		count, ips := s.sec.FailedIn(10 * time.Minute)
+		count, ips := s.sec.FailedIn(time.Minute)
 		if count >= a.LoginFailCount {
-			msg := "最近 10 分钟 SSH 失败登录 " + strconv.Itoa(count) + " 次，超过阈值 " + strconv.Itoa(a.LoginFailCount) + " 次"
+			msg := "最近 1 分钟 SSH 失败登录 " + strconv.Itoa(count) + " 次，超过阈值 " + strconv.Itoa(a.LoginFailCount) + " 次"
 			if len(ips) > 0 {
 				n := len(ips)
 				if n > 3 {
@@ -715,13 +715,13 @@ func (s *Server) checkSecurityAlerts() {
 		}
 	}
 	if a.WatchBadAccess && s.web != nil {
-		ips := s.web.RecentBadIPs(10*time.Minute, a.BadAccessCount)
+		ips := s.web.RecentBadIPs(time.Minute, a.BadAccessCount)
 		if len(ips) > 0 {
 			shown := ips
 			if len(shown) > 5 {
 				shown = shown[:5]
 			}
-			msg := "最近 10 分钟异常访问（4xx/5xx）达到阈值的 IP " + strconv.Itoa(len(ips)) + " 个：" + strings.Join(shown, "、")
+			msg := "最近 1 分钟异常访问（4xx/5xx）达到阈值的 IP " + strconv.Itoa(len(ips)) + " 个：" + strings.Join(shown, "、")
 			if len(ips) > len(shown) {
 				msg += " 等"
 			}
