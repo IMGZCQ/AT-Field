@@ -66,9 +66,9 @@
 
 ## 界面预览
 
-| 总览 | 网络与服务 |
+| 总览 | 网络与服务（实时连接） |
 | --- | --- |
-| ![总览](docs/screenshots/overview.png) | ![网络](docs/screenshots/network.png) |
+| ![总览](docs/screenshots/overview.png) | ![网络与服务](docs/screenshots/network.png) |
 
 | 健康度 | 防护日志 |
 | --- | --- |
@@ -77,6 +77,12 @@
 | 设置 | 关于 |
 | --- | --- |
 | ![设置](docs/screenshots/settings.png) | ![关于](docs/screenshots/about.png) |
+
+<p align="center">
+  <img src="docs/screenshots/access.png" alt="访问分析：请求趋势、来源地图、来源 IP 与被扫路径" />
+</p>
+
+<p align="center"><sub>网络与服务 · 访问分析：请求趋势、来源地区地图、来源 IP Top 与被扫路径 Top</sub></p>
 
 <p align="center">
   <img src="docs/screenshots/mobile-overview.png" width="30%" alt="手机端总览" />
