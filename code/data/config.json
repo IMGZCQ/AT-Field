@@ -1,0 +1,10 @@
+{
+  "config": {
+    "syncRate": 218,
+    "atDefense": true,
+    "invadeScan": true,
+    "dataSeal": true
+  },
+  "startedAt": 1795591832,
+  "enabledAt": 1795591832
+}

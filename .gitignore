@@ -1,0 +1,16 @@
+# 依赖
+code/frontend/node_modules/
+
+# 构建产物
+code/frontend/dist/
+build/
+*.fpk
+
+# 临时目录
+_scratch/
+.screenshots/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.log

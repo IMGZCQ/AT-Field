@@ -1,0 +1,38 @@
+#!/bin/bash
+
+### This script is called after the user uninstalls the application.
+
+# 获取用户在向导中的选择
+WIZARD_DATA_ACTION="$wizard_data_action"
+
+echo "卸载时，用户选择数据保留选项: $WIZARD_DATA_ACTION"
+
+# 是否保留用户数据
+if [ "$WIZARD_DATA_ACTION" = "delete" ]; then
+    echo "开始删除数据目录：${TRIM_APPDEST_VOL}/@appshare/${TRIM_APPNAME}"
+    rm -rf "${TRIM_APPDEST_VOL}/@appshare/${TRIM_APPNAME}"
+    rm -rf "${TRIM_APPDEST_VOL}/@appmeta/${TRIM_APPNAME}"
+    rm -rf "${TRIM_APPDEST_VOL}/@appconf/${TRIM_APPNAME}"
+    rm -rf "${TRIM_APPDEST_VOL}/@appdata/${TRIM_APPNAME}"
+    rm -rf "${TRIM_APPDEST_VOL}/@apphome/${TRIM_APPNAME}"
+else
+    echo "保留用户数据"
+fi
+
+# 清理本应用在未安装 fail2ban 时创建的 nft 兜底封禁表（inet atff）
+NFT_BIN=""
+for p in /usr/sbin/nft /sbin/nft /usr/bin/nft; do
+    if [ -x "$p" ]; then
+        NFT_BIN="$p"
+        break
+    fi
+done
+if [ -n "$NFT_BIN" ] && "$NFT_BIN" list table inet atff >/dev/null 2>&1; then
+    if "$NFT_BIN" delete table inet atff >/dev/null 2>&1; then
+        echo "已清理 nft 封禁表 inet atff"
+    else
+        echo "清理 nft 封禁表 inet atff 失败（可忽略）"
+    fi
+fi
+
+exit 0

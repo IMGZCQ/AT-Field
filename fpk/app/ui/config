@@ -1,0 +1,17 @@
+{
+    ".url": {
+        "AT-ForceField.Application": {
+            "title": "飞牛AT力场",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "",
+            "gatewaySocket": "AT-ForceField.sock",
+            "gatewayPrefix": "/app/AT-ForceField",
+            "url": "/app/AT-ForceField/",
+            "allUsers": false,
+            "control": {
+                "accessPerm": "readonly"
+            }
+        }
+    }
+}
