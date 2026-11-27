@@ -66,23 +66,17 @@
 
 ## 界面预览
 
-| 总览 | 网络与服务（实时连接） |
+| 总览 | 健康度 |
 | --- | --- |
-| ![总览](docs/screenshots/overview.png) | ![网络与服务](docs/screenshots/network.png) |
+| ![总览](docs/screenshots/overview.png) | ![健康度](docs/screenshots/health.png) |
 
-| 健康度 | 防护日志 |
+| 网络与服务 · 访问分析 | 网络与服务 · 实时连接 |
 | --- | --- |
-| ![健康度](docs/screenshots/health.png) | ![防护日志](docs/screenshots/logs.png) |
+| ![访问分析](docs/screenshots/access.png) | ![实时连接](docs/screenshots/network.png) |
 
-| 设置 | 关于 |
+| 防护日志 | 设置 |
 | --- | --- |
-| ![设置](docs/screenshots/settings.png) | ![关于](docs/screenshots/about.png) |
-
-<p align="center">
-  <img src="docs/screenshots/access.png" alt="访问分析：请求趋势、来源地图、来源 IP 与被扫路径" />
-</p>
-
-<p align="center"><sub>网络与服务 · 访问分析：请求趋势、来源地区地图、来源 IP Top 与被扫路径 Top</sub></p>
+| ![防护日志](docs/screenshots/logs.png) | ![设置](docs/screenshots/settings.png) |
 
 <p align="center">
   <img src="docs/screenshots/mobile-overview.png" width="30%" alt="手机端总览" />
