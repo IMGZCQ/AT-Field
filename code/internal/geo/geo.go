@@ -25,6 +25,8 @@ const (
 	ip2LocEndpoint = "https://api.ip2location.io/?ip=%s"
 	// iplocEndpoint iplocation.net 免费接口（主要用来确认国家与运营商）
 	iplocEndpoint = "https://api.iplocation.net/?ip=%s"
+	// zxincEndpoint zxinc 社区 IPv6 库（只在中国 IPv6 上提供省级参考，无经纬度）
+	zxincEndpoint = "https://ip.zxinc.org/api.php?type=json&ip=%s"
 	// cacheTTL 查询结果缓存时长
 	cacheTTL = 24 * time.Hour
 	// cacheMax 缓存条目上限
@@ -47,9 +49,11 @@ type Info struct {
 	Org     string `json:"org"`
 	AS      string `json:"as,omitempty"` // ASN，如 "AS56047 China Mobile communications corporation"
 	// Approx 多个数据源未能互相印证城市（常见于中国 IPv6 / 注册机构级数据），省市不可信
-	Approx bool   `json:"approx,omitempty"`
-	Source string `json:"source"` // local / multi / cache
-	Error  string `json:"error,omitempty"`
+	Approx bool `json:"approx,omitempty"`
+	// ProvinceHint 城市无法印证，但 zxinc 给出了中国 IPv6 的省级数据，Region 仅供参考
+	ProvinceHint bool   `json:"provinceHint,omitempty"`
+	Source       string `json:"source"` // local / multi / cache
+	Error        string `json:"error,omitempty"`
 }
 
 type entry struct {
@@ -125,25 +129,35 @@ type sourceData struct {
 	hasGeo   bool
 }
 
+// querySource 一个待查询的数据源
+type querySource struct {
+	name string
+	prio int
+	fn   func(string) (sourceData, bool)
+}
+
 // query 并发查询多个数据源并合并
 func (r *Resolver) query(ip string) Info {
-	type fetcher func(string) (sourceData, bool)
-	srcs := []struct {
-		name string
-		prio int
-		fn   fetcher
-	}{
+	srcs := []querySource{
 		{"ip-api", 0, r.fetchIPAPI},
 		{"iplocation.net", 1, r.fetchIPLocation},
 		{"ipwho.is", 2, r.fetchIPWho},
 		{"ip2location.io", 3, r.fetchIP2Location},
+	}
+	// IPv6 额外查 zxinc：它的国内 IPv6 省级数据比其他源细，但没有经纬度，
+	// 所以只作省份参考（ProvinceHint），不参与城市印证；境外 v6 结果直接丢弃。
+	if p := net.ParseIP(ip); p != nil && p.To4() == nil {
+		srcs = append([]querySource{{"zxinc", 0, r.fetchZXINC}}, srcs...)
+		for i := 1; i < len(srcs); i++ {
+			srcs[i].prio++
+		}
 	}
 
 	out := make(chan sourceData, len(srcs))
 	var wg sync.WaitGroup
 	for _, s := range srcs {
 		wg.Add(1)
-		go func(name string, prio int, fn fetcher) {
+		go func(name string, prio int, fn func(string) (sourceData, bool)) {
 			defer wg.Done()
 			d, ok := fn(ip)
 			if !ok {
@@ -192,6 +206,7 @@ func merge(ip string, ds []sourceData) Info {
 		}
 	} else {
 		info.Approx = true
+		info.Region, info.ProvinceHint = provinceHint(ds)
 	}
 
 	// 运营商：优先非注册机构的 ISP，其次用 ASN 名称识别
@@ -221,6 +236,17 @@ func merge(ip string, ds []sourceData) Info {
 		}
 	}
 	return info
+}
+
+// provinceHint 取 zxinc 给出的省级结果。zxinc 没有经纬度、只有单源，
+// 因此只在城市无法印证时作为参考省份，不参与 agreeingCity 的坐标印证。
+func provinceHint(ds []sourceData) (string, bool) {
+	for _, d := range ds {
+		if d.name == "zxinc" && d.info.Region != "" {
+			return d.info.Region, true
+		}
+	}
+	return "", false
 }
 
 // agreeingCity 找出至少两个坐标互相接近的非注册机构来源，城市可信时返回该聚类
@@ -395,6 +421,48 @@ func (r *Resolver) fetchIPLocation(ip string) (sourceData, bool) {
 	return d, true
 }
 
+// fetchZXINC zxinc 社区库（IPv6 专用）。返回的是分隔文本、没有经纬度，
+// 因此只取国家 / 省 / 运营商；境外结果不稳定，直接丢弃。
+func (r *Resolver) fetchZXINC(ip string) (sourceData, bool) {
+	var body struct {
+		Code int `json:"code"`
+		Data struct {
+			Country string `json:"country"`
+			Local   string `json:"local"`
+		} `json:"data"`
+	}
+	if !r.fetchJSON(fmt.Sprintf(zxincEndpoint, url.QueryEscape(ip)), &body) || body.Code != 0 {
+		return sourceData{}, false
+	}
+	area := splitZXinc(body.Data.Country) // 国家 / 省 /（市）
+	if len(area) < 2 || !strings.Contains(area[0], "中国") {
+		return sourceData{}, false
+	}
+	d := sourceData{}
+	d.info = Info{IP: ip, Country: "中国", Region: area[1]}
+	if local := splitZXinc(body.Data.Local); len(local) > 0 {
+		d.info.ISP = local[0]
+		if len(local) > 1 {
+			d.info.Org = local[1]
+		}
+	}
+	return d, true
+}
+
+// splitZXinc 拆分 zxinc 的字段：IPv6 用制表符，IPv4 / 部分记录用短横线
+func splitZXinc(s string) []string {
+	fields := strings.FieldsFunc(s, func(c rune) bool {
+		return c == '\t' || c == '–' || c == '\u3000'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // isRegistry 判断 ISP / 机构名是否只是 IP 注册机构（此时地址不可信）
 func isRegistry(isp, org string) bool {
 	s := strings.ToLower(isp + " " + org)
@@ -421,6 +489,23 @@ func operatorName(name string) string {
 	}
 	low := strings.ToLower(s)
 	switch {
+	// 中文库（如 zxinc）直接用中文名，先做匹配
+	case strings.Contains(s, "中国移动"):
+		return "中国移动"
+	case strings.Contains(s, "中国电信"):
+		return "中国电信"
+	case strings.Contains(s, "中国联通"):
+		return "中国联通"
+	case strings.Contains(s, "中国广播电视网络"), strings.Contains(s, "中国广电"), strings.Contains(s, "中国有线"):
+		return "中国广电"
+	case strings.Contains(s, "中国教育和科研"), strings.Contains(s, "教育网"):
+		return "教育网"
+	case strings.Contains(s, "阿里云"):
+		return "阿里云"
+	case strings.Contains(s, "腾讯云"):
+		return "腾讯云"
+	case strings.Contains(s, "华为云"):
+		return "华为云"
 	case strings.Contains(low, "china mobile"), strings.Contains(low, "chinamobile"):
 		return "中国移动"
 	case strings.Contains(low, "china telecom"), strings.Contains(low, "chinanet"):

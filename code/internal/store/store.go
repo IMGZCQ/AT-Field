@@ -12,21 +12,33 @@ import (
 	"atforcefield/internal/config"
 )
 
-// AlertConfig 告警设置：飞书 / 企业微信 / 钉钉 webhook 与各项阈值
+// MailConfig 邮件推送（SMTP）设置
+type MailConfig struct {
+	Host string `json:"host"` // SMTP 服务器，如 smtp.qq.com
+	Port int    `json:"port"` // 465 / 587 / 25
+	TLS  string `json:"tls"`  // ssl（465 直连 TLS）| starttls（587）| none（25，内网中继）
+	User string `json:"user"` // 登录账号
+	Pass string `json:"pass"` // 密码 / 授权码
+	From string `json:"from"` // 发件人，留空则用账号；支持「名称 <地址>」
+	To   string `json:"to"`   // 收件人，多个用逗号分隔
+}
+
+// AlertConfig 告警设置：飞书 / 企业微信 / 钉钉 webhook、邮件推送与各项阈值
 type AlertConfig struct {
-	Monitor      bool    `json:"monitor"` // 监控与告警（关闭则不判定、不写日志、不推送）
-	Push         bool    `json:"push"`    // 消息推送（关闭时照常判定并写日志，只是不发 webhook）
-	Webhook      string  `json:"webhook"`
-	WecomWebhook string  `json:"wecomWebhook"` // 企业微信群机器人 Webhook
-	FeishuSecret string  `json:"feishuSecret"` // 飞书机器人「签名校验」密钥（可选）
-	DingWebhook  string  `json:"dingWebhook"`  // 钉钉群机器人 Webhook（含 access_token）
-	DingSecret   string  `json:"dingSecret"`   // 钉钉机器人「加签」密钥（可选）
-	HealthMin    int     `json:"healthMin"`    // 健康指数低于该值告警
-	DiskPct      int     `json:"diskPct"`      // 磁盘使用率阈值（%）
-	MemPct       int     `json:"memPct"`       // 内存使用率阈值（%）
-	TempC        float64 `json:"tempC"`        // CPU 温度阈值（℃）
-	DiskTempC    float64 `json:"diskTempC"`    // 硬盘温度阈值（℃）
-	VolumePct    int     `json:"volumePct"`    // 单个分区使用率阈值（%）
+	Monitor      bool       `json:"monitor"` // 监控与告警（关闭则不判定、不写日志、不推送）
+	Push         bool       `json:"push"`    // 消息推送（关闭时照常判定并写日志，只是不发 webhook）
+	Webhook      string     `json:"webhook"`
+	WecomWebhook string     `json:"wecomWebhook"` // 企业微信群机器人 Webhook
+	FeishuSecret string     `json:"feishuSecret"` // 飞书机器人「签名校验」密钥（可选）
+	DingWebhook  string     `json:"dingWebhook"`  // 钉钉群机器人 Webhook（含 access_token）
+	DingSecret   string     `json:"dingSecret"`   // 钉钉机器人「加签」密钥（可选）
+	Mail         MailConfig `json:"mail"`         // 邮件推送
+	HealthMin    int        `json:"healthMin"`    // 健康指数低于该值告警
+	DiskPct      int        `json:"diskPct"`      // 磁盘使用率阈值（%）
+	MemPct       int        `json:"memPct"`       // 内存使用率阈值（%）
+	TempC        float64    `json:"tempC"`        // CPU 温度阈值（℃）
+	DiskTempC    float64    `json:"diskTempC"`    // 硬盘温度阈值（℃）
+	VolumePct    int        `json:"volumePct"`    // 单个分区使用率阈值（%）
 
 	// 以下为单项监控开关（默认全部开启）：关闭后该项不判定阈值、不写日志
 	WatchHealth   bool `json:"watchHealth"`
@@ -67,10 +79,16 @@ func DefaultScanBan() ScanBanConfig {
 	return ScanBanConfig{Enabled: false, Threshold: 10, Duration: "24h"}
 }
 
+// DefaultMail 返回默认邮件推送设置（只预填端口与加密方式，其余待用户填写）
+func DefaultMail() MailConfig {
+	return MailConfig{Port: 465, TLS: "ssl"}
+}
+
 // DefaultAlert 返回默认告警设置
 func DefaultAlert() AlertConfig {
 	return AlertConfig{
 		Monitor: true, Push: true,
+		Mail:      DefaultMail(),
 		HealthMin: 60, DiskPct: 90, MemPct: 92, TempC: 80, DiskTempC: 65, VolumePct: 92,
 		WatchHealth: true, WatchDisk: true, WatchMem: true,
 		WatchVolume: true, WatchTemp: true, WatchDiskTemp: true,
@@ -104,6 +122,21 @@ func (c *Config) Normalize() {
 	c.Alert.FeishuSecret = strings.TrimSpace(c.Alert.FeishuSecret)
 	c.Alert.DingWebhook = strings.TrimSpace(c.Alert.DingWebhook)
 	c.Alert.DingSecret = strings.TrimSpace(c.Alert.DingSecret)
+	c.Alert.Mail.Host = strings.TrimSpace(c.Alert.Mail.Host)
+	c.Alert.Mail.User = strings.TrimSpace(c.Alert.Mail.User)
+	c.Alert.Mail.From = strings.TrimSpace(c.Alert.Mail.From)
+	c.Alert.Mail.To = strings.TrimSpace(c.Alert.Mail.To)
+	if c.Alert.Mail.Port <= 0 || c.Alert.Mail.Port > 65535 {
+		c.Alert.Mail.Port = d.Mail.Port
+	}
+	switch c.Alert.Mail.TLS {
+	case "ssl", "starttls", "none":
+	default:
+		c.Alert.Mail.TLS = d.Mail.TLS
+	}
+	if c.Alert.Mail.From == "" {
+		c.Alert.Mail.From = c.Alert.Mail.User
+	}
 	if c.Alert.HealthMin <= 0 || c.Alert.HealthMin > 100 {
 		c.Alert.HealthMin = d.HealthMin
 	}

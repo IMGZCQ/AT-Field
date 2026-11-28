@@ -445,18 +445,20 @@ func (s *Server) handleProcTraffic(w http.ResponseWriter, r *http.Request) {
 
 // webIP 访问来源 IP 及其归属地
 type webIP struct {
-	IP       string `json:"ip"`
-	Count    int    `json:"count"`
-	Bad      int    `json:"bad,omitempty"`  // 异常请求（4xx / 5xx）次数
-	Scan     bool   `json:"scan,omitempty"` // 疑似扫描
-	Country  string `json:"country"`
-	Code     string `json:"code"` // ISO 3166-1 alpha-2
-	Region   string `json:"region"`
-	City     string `json:"city"`
-	ISP      string `json:"isp"`
-	AS       string `json:"as,omitempty"`     // ASN 名称
-	Approx   bool   `json:"approx,omitempty"` // 仅查询到注册机构级数据，地址可能不准
-	Internal bool   `json:"internal"`
+	IP      string `json:"ip"`
+	Count   int    `json:"count"`
+	Bad     int    `json:"bad,omitempty"`  // 异常请求（4xx / 5xx）次数
+	Scan    bool   `json:"scan,omitempty"` // 疑似扫描
+	Country string `json:"country"`
+	Code    string `json:"code"` // ISO 3166-1 alpha-2
+	Region  string `json:"region"`
+	City    string `json:"city"`
+	ISP     string `json:"isp"`
+	AS      string `json:"as,omitempty"`     // ASN 名称
+	Approx  bool   `json:"approx,omitempty"` // 仅查询到注册机构级数据，地址可能不准
+	// ProvinceHint 城市无法互相印证，但 zxinc 给出了中国 IPv6 的省级参考
+	ProvinceHint bool `json:"provinceHint,omitempty"`
+	Internal     bool `json:"internal"`
 }
 
 // webCountry 国家 / 地区访问占比
@@ -491,6 +493,7 @@ func (s *Server) handleWebSummary(w http.ResponseWriter, r *http.Request) {
 			ips[i].ISP = info.ISP
 			ips[i].AS = info.AS
 			ips[i].Approx = info.Approx
+			ips[i].ProvinceHint = info.ProvinceHint
 		}(i, it.IP)
 	}
 	wg.Wait()
@@ -585,6 +588,7 @@ func (s *Server) handleWebPathSources(w http.ResponseWriter, r *http.Request) {
 			ips[i].ISP = info.ISP
 			ips[i].AS = info.AS
 			ips[i].Approx = info.Approx
+			ips[i].ProvinceHint = info.ProvinceHint
 		}(i, it.IP)
 	}
 	wg.Wait()
@@ -1015,7 +1019,9 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求体格式错误")
 		return
 	}
-	// 保存前先校验 Webhook 地址，不合法直接拒绝，避免静默存进配置
+	// 先归一化（补默认端口 / 发件人等），再校验，避免用户只填了服务器时被默认值拒掉
+	cfg.Normalize()
+	// 保存前先校验 Webhook 地址与邮件设置，不合法直接拒绝，避免静默存进配置
 	for _, h := range []struct{ name, val string }{
 		{"飞书", cfg.Alert.Webhook},
 		{"企业微信", cfg.Alert.WecomWebhook},
@@ -1026,7 +1032,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	cfg.Normalize()
+	if alert.MailReady(cfg.Alert.Mail) {
+		if err := alert.ValidateMail(cfg.Alert.Mail); err != nil {
+			writeError(w, http.StatusBadRequest, "邮件推送配置不合法："+err.Error())
+			return
+		}
+	}
 	old := s.store.Config()
 	if err := s.store.Save(cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1171,6 +1182,19 @@ func describeChanges(old, next store.Config) []string {
 	}
 	if old.Alert.DingSecret != next.Alert.DingSecret {
 		out = append(out, "钉钉加签密钥已更新")
+	}
+	if old.Alert.Mail != next.Alert.Mail {
+		// 与启用判定一致：SMTP 服务器与收件人都填了才算开启
+		wasOn := strings.TrimSpace(old.Alert.Mail.Host) != "" && strings.TrimSpace(old.Alert.Mail.To) != ""
+		isOn := strings.TrimSpace(next.Alert.Mail.Host) != "" && strings.TrimSpace(next.Alert.Mail.To) != ""
+		switch {
+		case wasOn && !isOn:
+			out = append(out, "已关闭邮件推送")
+		case !wasOn && isOn:
+			out = append(out, "已开启邮件推送")
+		default:
+			out = append(out, "已更新邮件推送设置")
+		}
 	}
 	if old.Alert.HealthMin != next.Alert.HealthMin ||
 		old.Alert.DiskPct != next.Alert.DiskPct ||

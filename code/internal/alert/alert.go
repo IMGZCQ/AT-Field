@@ -312,13 +312,11 @@ func (e *Evaluator) transition(c cond) {
 	if e.au != nil {
 		e.au.AddDetail(shield.Log{Level: level, Module: module, Msg: msg, Source: "告警", Actor: "系统"})
 	}
-	// 消息推送已关闭：照常写日志，只是不发 webhook
+	// 消息推送已关闭：照常写日志，只是不发 webhook / 邮件
 	if e.cfg != nil && !e.cfg().Alert.Push {
 		return
 	}
-	for _, h := range e.hooks() {
-		e.pushAsync(h, msg)
-	}
+	e.pushAll(msg)
 }
 
 // Notify 推送一条安全事件通知（自动封禁 / SSH 异常登录 / 异常访问等）。
@@ -347,31 +345,75 @@ func (e *Evaluator) Notify(key, module, msg string) {
 	if !a.Push {
 		return
 	}
+	e.pushAll(msg)
+}
+
+// pushAll 推送到所有已配置渠道：群机器人 Webhook（飞书 / 企业微信 / 钉钉）+ 邮件
+func (e *Evaluator) pushAll(msg string) {
 	for _, h := range e.hooks() {
 		e.pushAsync(h, msg)
 	}
+	if m, ok := e.mailConfig(); ok {
+		e.pushMailAsync(m, msg)
+	}
 }
 
-// Test 发送测试消息到所有已配置的机器人（飞书 / 企业微信），返回失败原因汇总
+// Test 发送测试消息到所有已配置的渠道（机器人 Webhook / 邮件），返回失败原因汇总
 func (e *Evaluator) Test() error {
 	hooks := e.hooks()
-	if len(hooks) == 0 {
-		return errors.New("尚未填写飞书 / 企业微信 / 钉钉 Webhook 地址")
+	mailCfg, hasMail := e.mailConfig()
+	if len(hooks) == 0 && !hasMail {
+		return errors.New("尚未填写飞书 / 企业微信 / 钉钉 Webhook 地址，也未填写邮件推送的 SMTP 与收件人")
 	}
+	const testMsg = "这是一条测试消息，收到即表示告警推送配置成功。"
 	var errs []string
 	for _, h := range hooks {
 		if err := ValidateHook(h); err != nil {
 			errs = append(errs, channel(h)+"："+err.Error())
 			continue
 		}
-		if err := e.push(h, "这是一条测试消息，收到即表示告警推送配置成功。"); err != nil {
+		if err := e.push(h, testMsg); err != nil {
 			errs = append(errs, channel(h)+"："+err.Error())
+		}
+	}
+	if hasMail {
+		if err := sendMail(mailCfg, testMsg); err != nil {
+			errs = append(errs, "邮件："+err.Error())
 		}
 	}
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "；"))
 	}
 	return nil
+}
+
+// mailConfig 返回已填写完整的邮件推送设置
+func (e *Evaluator) mailConfig() (store.MailConfig, bool) {
+	var a store.AlertConfig
+	if e.cfg != nil {
+		a = e.cfg().Alert
+	}
+	m := a.Mail
+	if !MailReady(m) {
+		return m, false
+	}
+	return m, true
+}
+
+// pushMailAsync 异步发送告警邮件，失败重试一次并写入审计日志
+func (e *Evaluator) pushMailAsync(m store.MailConfig, msg string) {
+	go func() {
+		var err error
+		for i := 0; i < 2; i++ {
+			if err = sendMail(m, msg); err == nil {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+		if e.au != nil {
+			e.au.AddDetail(shield.Log{Level: "warn", Module: "告警推送", Msg: "邮件推送失败（已重试 2 次）：" + err.Error(), Source: "推送", Actor: "系统", Object: "邮件"})
+		}
+	}()
 }
 
 // pushAsync 异步推送，失败重试一次并写入审计日志，

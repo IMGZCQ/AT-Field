@@ -342,17 +342,23 @@ const banDurLabel = (v) => (BAN_DURS.find(([k]) => k === v) || BAN_DURS[0])[1]
 
 /* ---------- IP 归属地展示 ---------- */
 // approx：第三方库只查到注册机构级数据（常见于中国 IPv6），省/市是机构地址，不代表实际位置
+// provinceHint：城市无法印证，但 zxinc 给出了国内 IPv6 的省级参考
 const GEO_APPROX_NOTE = '地址可能不准'
+const GEO_PROVINCE_NOTE = '省级参考'
+const geoNoteText = (i = {}) => (i.provinceHint ? GEO_PROVINCE_NOTE : GEO_APPROX_NOTE)
 const geoRegionText = (i = {}) => {
   if (i.private) return i.country || '内网/保留地址'
-  if (i.approx) return i.country || '未知'
+  if (i.approx) {
+    return [i.country, i.provinceHint ? i.region : ''].filter(Boolean).join(' · ') || '未知'
+  }
   return [i.country, i.region, i.city].filter(Boolean).join(' · ') || '未知'
 }
 const geoLabelText = (i = {}, withNote = true) => {
   const internal = i.private || i.internal
   const base = internal ? i.country || '内网/保留地址' : geoRegionText(i)
   const op = i.isp ? ` · ${i.isp}` : ''
-  return `${base}${op}${withNote && i.approx && !internal ? `（${GEO_APPROX_NOTE}）` : ''}`
+  const note = withNote && i.approx && !internal ? `（${geoNoteText(i)}）` : ''
+  return `${base}${op}${note}`
 }
 
 /* ---------- 双线网络速率图 ---------- */
@@ -1177,7 +1183,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
                               <span>归属地</span>
                               <b>
                                 {geoLabelText(it, false)}
-                                {it.approx && !it.internal && <em className="geo-warn">{GEO_APPROX_NOTE}</em>}
+                                {it.approx && !it.internal && <em className="geo-warn">{geoNoteText(it)}</em>}
                               </b>
                             </div>
                             <div><span>封禁状态</span><b>{banStatus(it.ip)}</b></div>
@@ -1289,7 +1295,7 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
                 <br />
                 统计窗口按整点对齐：1 小时为本小时，1 天为近 24 小时，7 天 / 30 天为近 7 / 30 天（含今天）；
                 异常请求指 4xx / 5xx 状态码，疑似扫描指异常次数 ≥ 20 且占比过半的来源 IP。
-                地区占比按访问量最高的 10 个 IP 估算，公网地址会并发查询 ip-api、ipwho.is、ip2location、iplocation 多源比对并缓存 24 小时，内网地址仅本地判定。
+                地区占比按访问量最高的 10 个 IP 估算，公网地址会并发查询 ip-api、ipwho.is、ip2location、iplocation 多源比对并缓存 24 小时；IPv6 额外参考 zxinc 的省级数据（标注「省级参考」，不计入省份分布），内网地址仅本地判定。
                 只有两个以上数据源的城市坐标一致时才显示省市，否则只显示国家 / 运营商并标注「地址可能不准」，这类地址不计入省份分布。
                 {data.loopback > 0 && (
                   <>
@@ -1745,7 +1751,7 @@ function Network({ data }) {
         <p className="about-text" style={{ marginTop: 12, fontSize: 13 }}>
           失败登录明细来自 lastb / journalctl（跟随右上角时限选择：{rangeText}，按次数排序，最多 10 条）；封禁名单优先来自 fail2ban，
           未安装 fail2ban 时由本应用用 nft 独立封禁表拦截（封禁时长可选 1 小时 / 24 小时 / 一周 / 一年，到期由内核自动解封）。
-          点击「查看归属」会把该 IP 发送至 ip-api.com 查询并缓存 24 小时，内网地址仅本地判定、不会外发。
+          点击「查看归属」会把该 IP 发送至 ip-api.com 等多个公开归属地服务查询并缓存 24 小时（IPv6 另参考 zxinc 省级数据），内网地址仅本地判定、不会外发。
         </p>
       </section>
       <section className="two-col">
@@ -2003,7 +2009,7 @@ function Network({ data }) {
                       <span className="proc-num">{fmtTraffic(p.rx)}</span>
                       <span className="proc-num">{fmtTraffic(p.tx)}</span>
                       <span className="proc-share">
-                        <i style={{ width: `${Math.max(2, share)}%` }} />
+                        <span className="proc-bar"><i style={{ width: `${Math.max(2, share)}%` }} /></span>
                         <em>{share}%</em>
                       </span>
                     </div>
@@ -2205,6 +2211,17 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
   // 「更多」菜单（导出诊断包 / 导出配置 / 导入配置 / 恢复默认）是否展开
   const [moreOpen, setMoreOpen] = useState(false)
   const [alerts, setAlerts] = useState([])
+  // 推送渠道选项卡：飞书 / 企业微信 / 钉钉 / 邮件，一次只显示一个渠道的配置
+  const [pushTab, setPushTab] = useState('')
+  // 首次拿到配置时自动切到第一个已填写的渠道，省得每次都从空的飞书表单看起
+  useEffect(() => {
+    if (!cfg || pushTab) return
+    const a = cfg.alert || {}
+    const m = a.mail || {}
+    setPushTab(
+      a.webhook ? 'feishu' : a.wecomWebhook ? 'wecom' : a.dingWebhook ? 'ding' : m.host && m.to ? 'mail' : 'feishu'
+    )
+  }, [cfg, pushTab])
   // 隐藏的文件选择框，供「导入配置」触发
   const fileRef = useRef(null)
   // 只在首次拿到数据时填充表单：实时推送（SSE）每 5 秒会刷新 data，
@@ -2223,11 +2240,34 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
     setSaved(false)
     setDirty(true)
   }
+  // 邮件推送（SMTP）：嵌套在 alert 里，改动同样算未保存
+  const mail = alert.mail || { port: 465, tls: 'ssl' }
+  const setMail = (patch) => setAlert({ mail: { ...mail, ...patch } })
+  const setMailTLS = (tls) => {
+    // 切换加密方式时，端口仍是三个常用端口之一才跟着改，用户自填的端口保持不动
+    const defPort = { ssl: 465, starttls: 587, none: 25 }[tls]
+    const keepPort = ![465, 587, 25].includes(Number(mail.port)) && Number(mail.port) > 0
+    setMail(keepPort ? { tls } : { tls, port: defPort })
+  }
+  const activeTab = pushTab || 'feishu'
+  // [key, 名称, 是否已填写]：选项卡上的小圆点提示该渠道是否已配置
+  const pushTabs = [
+    ['feishu', '飞书', !!alert.webhook],
+    ['wecom', '企业微信', !!alert.wecomWebhook],
+    ['ding', '钉钉', !!alert.dingWebhook],
+    ['mail', '邮件', !!(mail.host && mail.to)],
+  ]
+  const pushHint = {
+    feishu: '飞书群 → 设置 → 群机器人 → 添加自定义机器人，复制 Webhook 地址；机器人开启「签名校验」时同时填写密钥',
+    wecom: '企业微信群 → 群机器人 → 添加机器人，复制 Webhook 地址（含 key=）',
+    ding: '钉钉群 → 机器人 → 添加自定义机器人，复制 Webhook 地址；机器人开启「加签」时同时填写加签密钥',
+    mail: 'SMTP 服务器与收件人都填写后才会发送；QQ / 163 等邮箱的密码要填后台生成的 SMTP 授权码',
+  }[activeTab]
   const testAlert = async () => {
     setTestMsg('发送中…')
     try {
       await api.alertTest()
-      setTestMsg('测试消息已发送，请检查飞书 / 企业微信 / 钉钉机器人')
+      setTestMsg('测试消息已发送，请检查飞书 / 企业微信 / 钉钉机器人与收件邮箱')
     } catch (e) {
       setTestMsg(e.message)
     }
@@ -2340,8 +2380,21 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
       for (const k of alBool) if (k in al && typeof al[k] !== 'boolean') return fail(`alert.${k} 应为 true / false`)
       for (const k of alNum) if (k in al && (typeof al[k] !== 'number' || !isFinite(al[k]))) return fail(`alert.${k} 应为数字`)
       for (const k of alStr) if (k in al && typeof al[k] !== 'string') return fail(`alert.${k} 应为字符串`)
+      // 邮件推送：host / tls / user / pass / from / to 为字符串，port 为数字
+      if ('mail' in al && al.mail !== null && al.mail !== undefined) {
+        const m = al.mail
+        if (typeof m !== 'object' || Array.isArray(m)) return fail('alert.mail 字段格式不对')
+        for (const k of ['host', 'tls', 'user', 'pass', 'from', 'to']) {
+          if (k in m && typeof m[k] !== 'string') return fail(`alert.mail.${k} 应为字符串`)
+        }
+        if ('port' in m && (typeof m.port !== 'number' || !isFinite(m.port))) return fail('alert.mail.port 应为数字')
+      }
     }
-    const countHooks = (c) => (c && c.alert ? ['webhook', 'wecomWebhook', 'dingWebhook'].filter((k) => c.alert[k]).length : 0)
+    // 推送渠道计数：3 个 Webhook + 1 个邮件（SMTP 与收件人都填才算启用）
+    const countHooks = (c) => (c && c.alert
+      ? ['webhook', 'wecomWebhook', 'dingWebhook'].filter((k) => c.alert[k]).length +
+        (c.alert.mail && c.alert.mail.host && c.alert.mail.to ? 1 : 0)
+      : 0)
     const sb = next.scanBan
     if (sb !== undefined && sb !== null) {
       if (typeof sb !== 'object' || Array.isArray(sb)) return fail('scanBan 字段格式不对')
@@ -2465,13 +2518,13 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
         </div>
         <div className="setting-row">
           <div>
-            <div className="setting-title">消息推送（飞书 / 企业微信 / 钉钉）</div>
+            <div className="setting-title">消息推送</div>
             <div className="setting-desc">
               {!alert.monitor
                 ? '「监控与告警」关闭时此项不生效'
                 : alert.push
-                ? '已开启：触发告警时推送到下方 Webhook 地址'
-                : '已关闭：照常写入防护日志，只是不发飞书 / 企业微信 / 钉钉消息'}
+                ? '已开启：触发告警时推送到下方已填写的渠道（飞书 / 企业微信 / 钉钉 / 邮件），可同时使用多个'
+                : '已关闭：照常写入防护日志，只是不发飞书 / 企业微信 / 钉钉消息，也不发邮件'}
             </div>
           </div>
           <button
@@ -2482,55 +2535,168 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
             <span className="switch-knob" />
           </button>
         </div>
-        <div className="form-row">
-          <label className="form-label">飞书机器人 Webhook</label>
-          <input
-            className="text-input"
-            placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"
-            value={alert.webhook || ''}
-            onChange={(e) => setAlert({ webhook: e.target.value })}
-          />
+        <div className="push-tabs" role="tablist" aria-label="推送渠道">
+          {pushTabs.map(([key, label, on]) => (
+            <button
+              type="button"
+              key={key}
+              role="tab"
+              aria-selected={activeTab === key}
+              className={`push-tab ${activeTab === key ? 'on' : ''}`}
+              onClick={() => setPushTab(key)}
+            >
+              <span className={`push-dot ${on ? 'on' : ''}`} title={on ? '已填写' : '未填写'} />
+              {label}
+            </button>
+          ))}
         </div>
-        <div className="form-row">
-          <label className="form-label">企业微信机器人 Webhook</label>
-          <input
-            className="text-input"
-            placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…"
-            value={alert.wecomWebhook || ''}
-            onChange={(e) => setAlert({ wecomWebhook: e.target.value })}
-          />
-        </div>
-        <div className="form-row">
-          <label className="form-label">钉钉机器人 Webhook</label>
-          <input
-            className="text-input"
-            placeholder="https://oapi.dingtalk.com/robot/send?access_token=…"
-            value={alert.dingWebhook || ''}
-            onChange={(e) => setAlert({ dingWebhook: e.target.value })}
-          />
-        </div>
-        <div className="form-row">
-          <label className="form-label">飞书签名校验密钥</label>
-          <input
-            className="text-input"
-            type="password"
-            autoComplete="new-password"
-            placeholder="可选：飞书机器人「签名校验」密钥，填写后推送自动加签"
-            value={alert.feishuSecret || ''}
-            onChange={(e) => setAlert({ feishuSecret: e.target.value })}
-          />
-        </div>
-        <div className="form-row">
-          <label className="form-label">钉钉加签密钥</label>
-          <input
-            className="text-input"
-            type="password"
-            autoComplete="new-password"
-            placeholder="可选：钉钉机器人「加签」密钥（SEC 开头），填写后推送自动加签"
-            value={alert.dingSecret || ''}
-            onChange={(e) => setAlert({ dingSecret: e.target.value })}
-          />
-        </div>
+        <div className="push-hint">{pushHint}</div>
+        {activeTab === 'feishu' && (
+          <>
+            <div className="form-row">
+              <label className="form-label">机器人 Webhook</label>
+              <input
+                className="text-input"
+                placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"
+                value={alert.webhook || ''}
+                onChange={(e) => setAlert({ webhook: e.target.value })}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label">签名校验密钥</label>
+              <input
+                className="text-input"
+                type="password"
+                autoComplete="new-password"
+                placeholder="可选：飞书机器人「签名校验」密钥，填写后推送自动加签"
+                value={alert.feishuSecret || ''}
+                onChange={(e) => setAlert({ feishuSecret: e.target.value })}
+              />
+            </div>
+          </>
+        )}
+        {activeTab === 'wecom' && (
+          <div className="form-row">
+            <label className="form-label">机器人 Webhook</label>
+            <input
+              className="text-input"
+              placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…"
+              value={alert.wecomWebhook || ''}
+              onChange={(e) => setAlert({ wecomWebhook: e.target.value })}
+            />
+          </div>
+        )}
+        {activeTab === 'ding' && (
+          <>
+            <div className="form-row">
+              <label className="form-label">机器人 Webhook</label>
+              <input
+                className="text-input"
+                placeholder="https://oapi.dingtalk.com/robot/send?access_token=…"
+                value={alert.dingWebhook || ''}
+                onChange={(e) => setAlert({ dingWebhook: e.target.value })}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label">加签密钥</label>
+              <input
+                className="text-input"
+                type="password"
+                autoComplete="new-password"
+                placeholder="可选：钉钉机器人「加签」密钥（SEC 开头），填写后推送自动加签"
+                value={alert.dingSecret || ''}
+                onChange={(e) => setAlert({ dingSecret: e.target.value })}
+              />
+            </div>
+          </>
+        )}
+        {activeTab === 'mail' && (
+          <>
+            <div className="form-row">
+              <label className="form-label">SMTP 服务器</label>
+              <input
+                className="text-input"
+                placeholder="如 smtp.qq.com / smtp.163.com / smtp.gmail.com"
+                value={mail.host || ''}
+                onChange={(e) => setMail({ host: e.target.value })}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label">端口 / 加密方式</label>
+              <input
+                className="text-input mail-port"
+                type="number"
+                min={1}
+                max={65535}
+                step="1"
+                title="有效范围 1 - 65535"
+                value={mail.port ?? ''}
+                onChange={(e) => setMail({ port: e.target.value === '' ? '' : Number(e.target.value) })}
+                onBlur={(e) => {
+                  let v = Number(e.target.value)
+                  if (e.target.value === '' || Number.isNaN(v)) v = { ssl: 465, starttls: 587, none: 25 }[mail.tls] || 465
+                  v = Math.min(65535, Math.max(1, Math.round(v)))
+                  if (v !== mail.port) setMail({ port: v })
+                }}
+              />
+              <div className="ban-dur" role="group" aria-label="加密方式">
+                {[
+                  ['ssl', 'SSL（465）'],
+                  ['starttls', 'STARTTLS（587）'],
+                  ['none', '无加密（25）'],
+                ].map(([v, label]) => (
+                  <button
+                    type="button"
+                    key={v}
+                    className={`ban-dur-btn ${(mail.tls || 'ssl') === v ? 'on' : ''}`}
+                    onClick={() => setMailTLS(v)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="form-row">
+              <label className="form-label">SMTP 账号</label>
+              <input
+                className="text-input"
+                autoComplete="off"
+                placeholder="完整邮箱地址，如 alert@qq.com"
+                value={mail.user || ''}
+                onChange={(e) => setMail({ user: e.target.value })}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label">密码 / 授权码</label>
+              <input
+                className="text-input"
+                type="password"
+                autoComplete="new-password"
+                placeholder="QQ / 163 等邮箱需使用「SMTP 授权码」，不是登录密码"
+                value={mail.pass || ''}
+                onChange={(e) => setMail({ pass: e.target.value })}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label">发件人</label>
+              <input
+                className="text-input"
+                placeholder="可选：留空则用 SMTP 账号；支持「飞牛AT力场 <alert@qq.com>」"
+                value={mail.from || ''}
+                onChange={(e) => setMail({ from: e.target.value })}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label">收件人</label>
+              <input
+                className="text-input"
+                placeholder="多个收件人用英文逗号分隔，如 admin@example.com,ops@example.com"
+                value={mail.to || ''}
+                onChange={(e) => setMail({ to: e.target.value })}
+              />
+            </div>
+          </>
+        )}
         <div className="threshold-grid">
           {[
             ['healthMin', '健康指数低于（%）', 1, 100, 'watchHealth'],
@@ -2666,6 +2832,8 @@ function Settings({ data, onSave, onEnable, onDisable, onDirtyChange }) {
           每项前面的勾选框是该指标的独立监控开关，默认全部勾选；取消勾选后该项不判定阈值、不写日志、不推送（其余项不受影响）。
           阈值触发后写入防护日志；填写 Webhook 后同时推送到飞书 / 企业微信 / 钉钉（填几个就各推一份），同一告警 30 分钟内只推送一次，应用重启后冷却时间仍然有效。
           Webhook 仅接受 https 的飞书 / 企业微信 / 钉钉官方机器人地址；机器人开启签名（飞书）或加签（钉钉）时，需同时填写密钥；推送失败（含重试 2 次）会记入防护日志。
+          <b> 邮件推送：SMTP 服务器与收件人都填写后才会发送，同样受「消息推送」开关控制。</b>
+          端口与加密方式需对应（465 / SSL、587 / STARTTLS、25 / 无加密）；QQ、163 等邮箱的「密码」要填邮箱后台生成的 SMTP 授权码，不是登录密码；留空发件人则用 SMTP 账号，多个收件人用英文逗号分隔。
           指标进入告警时推送一条通知，回落到阈值以下会再推一条「已恢复」，其中磁盘/内存/温度严重超限会标记为严重级别。
           安全事件部分默认关闭：开启「自动封禁 IP 通知」后，扫描防护每轮封禁会汇总推送一条；开启「SSH 异常登录提醒」或「异常访问突增提醒」后，后台每 30 秒按最近 1 分钟窗口检查一次，达到设定次数即推送，同类事件 30 分钟内只推一次。
           <b> 以上阈值与 Webhook 都要点「保存设置」才会写入配置并生效。</b>

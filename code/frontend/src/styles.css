@@ -984,7 +984,10 @@ body {
 .proc-row:hover { background: rgba(139, 107, 255, 0.1); border-radius: 8px; }
 .proc-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .proc-share { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.proc-share i { flex: 1 1 auto; min-width: 0; height: 6px; border-radius: 3px; background: linear-gradient(90deg, #8b6bff, #43e7ad); }
+/* 进度条=固定轨道+内部填充：轨道占满剩余宽度，填充宽度由行内 style 的百分比决定，
+   轨道背景不再用量值，避免 flex-grow 把填充拉满导致每行都显示 100%。 */
+.proc-bar { flex: 1 1 auto; min-width: 0; height: 6px; border-radius: 3px; background: rgba(139, 107, 255, 0.16); overflow: hidden; }
+.proc-bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #8b6bff, #43e7ad); }
 .proc-share em { flex: none; width: 30px; text-align: right; font-style: normal; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 @media (max-width: 560px) {
   .proc-grid { grid-template-columns: minmax(0, 1.2fr) 66px 66px 74px; font-size: 12px; padding: 7px 6px; }
@@ -1109,6 +1112,25 @@ body {
 /* 安全事件推送：阈值输入框与开关并排放在设置行右侧 */
 .alert-inline { display: flex; align-items: center; gap: 10px; flex: none; }
 .alert-num { width: 88px; text-align: right; }
+/* 邮件推送：端口输入框固定宽度，右侧紧跟加密方式分段按钮 */
+.mail-port { flex: none; width: 96px; text-align: right; }
+/* 推送渠道选项卡：飞书 / 企业微信 / 钉钉 / 邮件 四选一，避免一次铺开十几个输入框 */
+.push-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 10px 0 6px; }
+.push-tab {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 0; padding: 7px 4px; border-radius: 9px; cursor: pointer;
+  border: 1px solid rgba(139, 107, 255, 0.24); background: rgba(255, 255, 255, 0.035);
+  color: var(--text-dim); font-size: 12.5px; line-height: 1.5; white-space: nowrap;
+}
+.push-tab:hover { background: rgba(193, 197, 255, 0.1); color: #fff; }
+.push-tab.on { border-color: rgba(139, 107, 255, 0.6); background: rgba(139, 107, 255, 0.22); color: #fff; font-weight: 600; }
+.push-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: rgba(255, 255, 255, 0.22); }
+.push-dot.on { background: #43e7ad; box-shadow: 0 0 6px rgba(67, 231, 173, 0.75); }
+.push-hint { margin: 0 0 10px; font-size: 12px; line-height: 1.55; color: var(--text-faint); }
+@media (max-width: 560px) {
+  .push-tabs { gap: 4px; }
+  .push-tab { gap: 4px; padding: 7px 2px; font-size: 11.5px; }
+}
 /* 导出 / 导入配置的结果提示：贴在按钮下方，成功与失败共用一条，靠文案区分 */
 .io-msg {
   margin-top: 10px;
