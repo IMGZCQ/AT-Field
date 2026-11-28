@@ -114,6 +114,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/ip/unban", s.handleIPUnban)
 	s.mux.HandleFunc("GET /api/web/summary", s.handleWebSummary)
 	s.mux.HandleFunc("GET /api/web/pathsources", s.handleWebPathSources)
+	s.mux.HandleFunc("GET /api/web/paths", s.handleWebPaths)
 	s.mux.HandleFunc("GET /api/net/connections", s.handleConnList)
 	s.mux.HandleFunc("POST /api/net/connections/kill", s.handleConnKill)
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
@@ -601,6 +602,26 @@ func (s *Server) handleWebPathSources(w http.ResponseWriter, r *http.Request) {
 		"retentionDays": weblog.PathIPRetentionDays,
 		"ips":           ips,
 	})
+}
+
+// handleWebPaths 返回某个状态码下的访问路径 Top，用于「被访问路径」按状态码细分。
+func (s *Server) handleWebPaths(w http.ResponseWriter, r *http.Request) {
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	valid := len(status) == 3 && status[0] >= '1' && status[0] <= '5'
+	for i := 0; valid && i < 3; i++ {
+		if status[i] < '0' || status[i] > '9' {
+			valid = false
+		}
+	}
+	if !valid {
+		writeError(w, http.StatusBadRequest, "status 参数应为 3 位 HTTP 状态码")
+		return
+	}
+	if s.web == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": status, "total": 0, "paths": []weblog.PathCount{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.web.PathsByStatus(status, r.URL.Query().Get("range"), 10))
 }
 
 // netWindow 网络页所选时限对应的统计窗口

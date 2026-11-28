@@ -1006,7 +1006,40 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
   // 被访问路径：点击某条路径展开其来源 IP（路径-来源关联只保留最近 7 天）
   const [openPath, setOpenPath] = useState('')
   const [pathSrc, setPathSrc] = useState({ path: '', loading: false, data: null, err: '' })
+  // 状态码筛选：'' 表示全部（All），选中某个状态码后路径列表只显示该状态码的结果
+  const [pathFilter, setPathFilter] = useState('')
+  const [statusPaths, setStatusPaths] = useState({ status: '', loading: false, data: null, err: '' })
+  // 记录「全部」列表的高度，筛选时用 min-height 撑住，避免面板高度跳动
+  const pathBodyRef = useRef(null)
+  const [pathBodyH, setPathBodyH] = useState(0)
   useEffect(() => { setOpenPath('') }, [range])
+  useEffect(() => {
+    // 切换时限后回到「全部」，避免带着旧筛选去查新窗口
+    setPathFilter('')
+    setStatusPaths({ status: '', loading: false, data: null, err: '' })
+  }, [range])
+  useEffect(() => {
+    if (!pathFilter) return
+    let alive = true
+    setOpenPath('')
+    setStatusPaths({ status: pathFilter, loading: true, data: null, err: '' })
+    api.webPaths(pathFilter, range)
+      .then((d) => { if (alive) setStatusPaths({ status: pathFilter, loading: false, data: d, err: '' }) })
+      .catch((e) => { if (alive) setStatusPaths({ status: pathFilter, loading: false, data: null, err: e.message }) })
+    return () => { alive = false }
+  }, [pathFilter, range])
+  // 未筛选时测量列表高度；筛选后沿用这个高度，状态码区就不会上下跳
+  useEffect(() => {
+    if (pathFilter) return undefined
+    const el = pathBodyRef.current
+    if (!el) return undefined
+    const measure = () => setPathBodyH(el.offsetHeight)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [pathFilter, range, data?.paths?.length])
   const togglePath = (path) => {
     if (openPath === path) {
       setOpenPath('')
@@ -1060,7 +1093,9 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
   const bad = data.bad != null ? data.bad : statuses.filter((s) => /^[45]/.test(s.code)).reduce((a, s) => a + s.count, 0)
   const badPct = total ? Math.round((bad * 100) / total) : 0
   const abroadPct = data.domesticPct == null ? null : 100 - data.domesticPct
-  const maxPath = Math.max(1, ...paths.map((p) => p.count))
+  // 选了状态码时用接口返回的路径列表，否则用汇总里的全部路径
+  const shownPaths = pathFilter ? (statusPaths.data?.paths || []) : paths
+  const maxPath = Math.max(1, ...shownPaths.map((p) => p.count))
   const countrySum = countries.reduce((a, c) => a + c.count, 0) || 1
   const maxCountry = Math.max(1, ...countries.map((c) => c.count))
   const granularity = range === '1h' ? '每 10 分钟' : isDay ? '按天' : '按小时'
@@ -1200,65 +1235,108 @@ function WebAccess({ data, err, range, bannedSet, banStatus, banBtn, scanIps = [
             <div className="panel">
               <div className="panel-head">
                 <div className="panel-title"><Icon name="net" size={16} /> 被访问路径 Top</div>
-                <div className="panel-sub">已去除查询参数 · 点击路径查看来源 IP</div>
+                <div className="panel-sub">
+                  {pathFilter
+                    ? `仅看状态码 ${pathFilter} · 点击状态码可切换`
+                    : '已去除查询参数 · 点击路径查看来源 IP'}
+                </div>
               </div>
-              {paths.length === 0 ? (
-                <div className="empty">该时段暂无访问记录</div>
-              ) : (
-                <div className="web-path-list">
-                  {paths.map((p) => (
-                    <div className={`web-path ${openPath === p.path ? 'open' : ''}`} key={p.path}>
-                      <div className="web-path-top ip-click" onClick={() => togglePath(p.path)}>
-                        <span className="path-name">
-                          <span className="mono ellipsis" title={p.path}>{p.path}</span>
-                          <em className="net-caret">›</em>
-                        </span>
-                        <span className="web-path-count">{p.count} 次</span>
-                      </div>
-                      <div className="web-bar"><i style={{ width: `${Math.max(2, (p.count * 100) / maxPath)}%` }} /></div>
-                      {openPath === p.path && (
-                        <div className="path-src">
-                          {pathSrc.loading && <div className="src-hint">正在统计来源 IP…</div>}
-                          {pathSrc.err && <div className="src-hint">来源 IP 加载失败：{pathSrc.err}</div>}
-                          {pathSrc.data && (
-                            (pathSrc.data.ips || []).length === 0 ? (
-                              <div className="src-hint">该时段没有记录到来源 IP（路径-来源关联只保留最近 {pathSrc.data.retentionDays || 7} 天）</div>
-                            ) : (
-                              <>
-                                <div className="src-grid src-head"><span>来源 IP</span><span>请求</span><span>归属地</span></div>
-                                {(pathSrc.data.ips || []).map((it) => {
-                                  const place = it.internal ? '内网/保留地址' : geoLabelText(it)
-                                  return (
-                                    <div className="src-grid src-row" key={it.ip}>
-                                      <span className="mono ellipsis" title={it.ip}>{it.ip}</span>
-                                      <span className="src-num">{it.count} 次</span>
-                                      <span className="ellipsis" title={place}>{place}</span>
-                                    </div>
-                                  )
-                                })}
-                                <div className="src-foot">
-                                  已记录 {pathSrc.data.covered} 次 · 仅列出 Top 5 来源
-                                  {pathSrc.data.partial
-                                    ? '（窗口超过 7 天，只统计最近 7 天）'
-                                    : `（保留最近 ${pathSrc.data.retentionDays || 7} 天）`}
-                                </div>
-                              </>
-                            )
-                          )}
+              <div
+                className="web-path-body"
+                ref={pathBodyRef}
+                style={pathFilter && pathBodyH ? { minHeight: `${pathBodyH}px` } : undefined}
+              >
+                {shownPaths.length === 0 ? (
+                  <div className="empty">
+                    {!pathFilter
+                      ? '该时段暂无访问记录'
+                      : statusPaths.loading
+                      ? '正在统计该状态码的路径…'
+                      : statusPaths.err
+                      ? `路径加载失败：${statusPaths.err}`
+                      : `该时段没有 ${pathFilter} 状态码的访问记录`}
+                  </div>
+                ) : (
+                  <div className="web-path-list">
+                    {shownPaths.map((p) => (
+                      <div className={`web-path ${openPath === p.path ? 'open' : ''}`} key={p.path}>
+                        <div className="web-path-top ip-click" onClick={() => togglePath(p.path)}>
+                          <span className="path-name">
+                            <span className="mono ellipsis" title={p.path}>{p.path}</span>
+                            <em className="net-caret">›</em>
+                          </span>
+                          <span className="web-path-count">{p.count} 次</span>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        <div className="web-bar"><i style={{ width: `${Math.max(2, (p.count * 100) / maxPath)}%` }} /></div>
+                        {openPath === p.path && (
+                          <div className="path-src">
+                            {pathSrc.loading && <div className="src-hint">正在统计来源 IP…</div>}
+                            {pathSrc.err && <div className="src-hint">来源 IP 加载失败：{pathSrc.err}</div>}
+                            {pathSrc.data && (
+                              (pathSrc.data.ips || []).length === 0 ? (
+                                <div className="src-hint">该时段没有记录到来源 IP（路径-来源关联只保留最近 {pathSrc.data.retentionDays || 7} 天）</div>
+                              ) : (
+                                <>
+                                  <div className="src-grid src-head"><span>来源 IP</span><span>请求</span><span>归属地</span></div>
+                                  {(pathSrc.data.ips || []).map((it) => {
+                                    const place = it.internal ? '内网/保留地址' : geoLabelText(it)
+                                    return (
+                                      <div className="src-grid src-row" key={it.ip}>
+                                        <span className="mono ellipsis" title={it.ip}>{it.ip}</span>
+                                        <span className="src-num">{it.count} 次</span>
+                                        <span className="ellipsis" title={place}>{place}</span>
+                                      </div>
+                                    )
+                                  })}
+                                  <div className="src-foot">
+                                    已记录 {pathSrc.data.covered} 次 · 仅列出 Top 5 来源
+                                    {pathSrc.data.partial
+                                      ? '（窗口超过 7 天，只统计最近 7 天）'
+                                      : `（保留最近 ${pathSrc.data.retentionDays || 7} 天）`}
+                                  </div>
+                                </>
+                              )
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {statuses.length > 0 && (
+                <div className="path-filter-foot">
+                  {pathFilter && statusPaths.data ? (
+                    <>
+                      状态码 {pathFilter} 共 {statusPaths.data.total} 次
+                      {statusPaths.data.paths && statusPaths.data.paths.length >= 10 ? ' · 仅列出 Top 10 路径' : ''}
+                    </>
+                  ) : '\u00A0'}
                 </div>
               )}
               {statuses.length > 0 && (
                 <>
-                  <div className="web-divider"><span>状态码分布</span></div>
-                  <div className="status-chips">
+                  <div className="web-divider"><span>状态码分布 · 点击细分路径</span></div>
+                  <div className="status-chips" role="group" aria-label="按状态码筛选访问路径">
+                    <button
+                      type="button"
+                      className={`status-chip st-all ${pathFilter === '' ? 'on' : ''}`}
+                      aria-pressed={pathFilter === ''}
+                      onClick={() => setPathFilter('')}
+                    >
+                      全部<i>{statuses.reduce((a, s) => a + s.count, 0)}</i>
+                    </button>
                     {statuses.map((s) => (
-                      <span className={`status-chip ${statusTone(s.code)}`} key={s.code}>
+                      <button
+                        type="button"
+                        className={`status-chip ${statusTone(s.code)} ${pathFilter === s.code ? 'on' : ''}`}
+                        key={s.code}
+                        aria-pressed={pathFilter === s.code}
+                        title={pathFilter === s.code ? '取消筛选，返回全部' : `只看 ${s.code} 的访问路径`}
+                        onClick={() => setPathFilter(pathFilter === s.code ? '' : s.code)}
+                      >
                         {s.code}<i>{s.count}</i>
-                      </span>
+                      </button>
                     ))}
                   </div>
                 </>
@@ -1558,6 +1636,17 @@ function Network({ data }) {
     )
   }
 
+  // 明细里的归属地：未查询时只给一个「点击查询」，点一下就查，不再铺一长句提示
+  const geoDetail = (ip) => {
+    const text = geoText(ip)
+    if (text) return <b>{text}</b>
+    return (
+      <b>
+        <button type="button" className="geo-link" onClick={() => lookup(ip)}>点击查询</button>
+      </b>
+    )
+  }
+
   // 封禁 / 解封：失败时原样回显后端错误，成功后刷新列表
   const doBan = async (ip, ban) => {
     if (acting) return
@@ -1728,7 +1817,7 @@ function Network({ data }) {
                       <div><span>最近尝试</span><b>{f.lastTs ? fmtTime(f.lastTs) : '—'}</b></div>
                       <div><span>尝试账号</span><b className="mono">{f.user || '—'}</b></div>
                       <div><span>封禁状态</span><b>{banStatus(f.ip)}</b></div>
-                      <div><span>归属地</span><b>{geoText(f.ip) || '未查询，点「查看归属」查询'}</b></div>
+                      <div><span>归属地</span>{geoDetail(f.ip)}</div>
                       {banBtn(f.ip)}
                     </div>
                   )}
@@ -1783,7 +1872,7 @@ function Network({ data }) {
                     <div><span>协议 / 状态</span><b>{d.protocol || '—'} · {d.state || 'ESTAB'}</b></div>
                     <div><span>进程</span><b className="mono">{d.process ? `${d.process}${d.pid ? ` (PID ${d.pid})` : ''}` : '需 root 权限查看'}</b></div>
                     <div><span>连接数</span><b>{d.count || c.count} 个</b></div>
-                    <div><span>归属地</span><b>{geoText(ip) || '未查询，点「查看归属」查询'}</b></div>
+                    <div><span>归属地</span>{geoDetail(ip)}</div>
                     <div><span>封禁状态</span><b>{banStatus(ip)}</b></div>
                     {banBtn(ip)}
                   </div>

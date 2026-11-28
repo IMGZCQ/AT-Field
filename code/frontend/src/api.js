@@ -26,6 +26,8 @@ export const api = {
   webSummary: (range = '1d') => request(`/api/web/summary?range=${range}`),
   webPathSources: (path, range = '1d') =>
     request(`/api/web/pathsources?path=${encodeURIComponent(path)}&range=${range}`),
+  webPaths: (status, range = '1d') =>
+    request(`/api/web/paths?status=${encodeURIComponent(status)}&range=${range}`),
   ipinfo: (ip) => request(`/api/ipinfo?ip=${encodeURIComponent(ip)}`),
   banIp: (ip, duration = '1h') =>
     request('/api/ip/ban', { method: 'POST', body: JSON.stringify({ ip, duration }) }),

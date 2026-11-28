@@ -72,24 +72,28 @@ type hourBucket struct {
 	IPBad    map[string]int `json:"ipBad,omitempty"` // 来源 IP 的异常请求次数
 	Paths    map[string]int `json:"paths"`           // 请求路径（不含查询串）次数
 	Statuses map[string]int `json:"statuses"`        // HTTP 状态码分布
+	// PathStatus 路径 → 状态码 → 次数，用于按状态码筛选路径 Top（落盘时只保留 Paths 内的路径）
+	PathStatus map[string]map[string]int `json:"pathStatus,omitempty"`
 }
 
 func newBucket(hour int64) *hourBucket {
 	return &hourBucket{
-		Hour:     hour,
-		IPs:      map[string]int{},
-		IPBad:    map[string]int{},
-		Paths:    map[string]int{},
-		Statuses: map[string]int{},
+		Hour:       hour,
+		IPs:        map[string]int{},
+		IPBad:      map[string]int{},
+		Paths:      map[string]int{},
+		Statuses:   map[string]int{},
+		PathStatus: map[string]map[string]int{},
 	}
 }
 
 func (b *hourBucket) clone() *hourBucket {
 	c := &hourBucket{Hour: b.Hour, Total: b.Total, Slots: b.Slots, Bad: b.Bad,
-		IPs:      make(map[string]int, len(b.IPs)),
-		IPBad:    make(map[string]int, len(b.IPBad)),
-		Paths:    make(map[string]int, len(b.Paths)),
-		Statuses: make(map[string]int, len(b.Statuses)),
+		IPs:        make(map[string]int, len(b.IPs)),
+		IPBad:      make(map[string]int, len(b.IPBad)),
+		Paths:      make(map[string]int, len(b.Paths)),
+		Statuses:   make(map[string]int, len(b.Statuses)),
+		PathStatus: make(map[string]map[string]int, len(b.PathStatus)),
 	}
 	for k, v := range b.IPs {
 		c.IPs[k] = v
@@ -102,6 +106,13 @@ func (b *hourBucket) clone() *hourBucket {
 	}
 	for k, v := range b.Statuses {
 		c.Statuses[k] = v
+	}
+	for p, m := range b.PathStatus {
+		cm := make(map[string]int, len(m))
+		for k, v := range m {
+			cm[k] = v
+		}
+		c.PathStatus[p] = cm
 	}
 	return c
 }
@@ -148,6 +159,15 @@ type SourceQuery struct {
 	Covered int       `json:"covered"` // 已记录来源的请求数合计（只含 Top IP，故可能小于路径总次数）
 	Partial bool      `json:"partial"` // 窗口超过 7 天时只统计最近 7 天
 	IPs     []IPCount `json:"ips"`
+}
+
+// StatusPathQuery 某个 HTTP 状态码下的访问路径 Top N
+type StatusPathQuery struct {
+	Status string      `json:"status"`
+	From   int64       `json:"from"`
+	To     int64       `json:"to"`
+	Total  int         `json:"total"` // 该状态码在窗口内的请求总数
+	Paths  []PathCount `json:"paths"`
 }
 
 // Query 一次访问分析的聚合结果
@@ -406,6 +426,15 @@ func (c *Collector) addLineLocked(line string) {
 	b.Paths[path]++
 	c.addPathIPLocked(path, ip)
 	b.Statuses[m[4]]++
+	if b.PathStatus == nil {
+		b.PathStatus = map[string]map[string]int{}
+	}
+	ps := b.PathStatus[path]
+	if ps == nil {
+		ps = map[string]int{}
+		b.PathStatus[path] = ps
+	}
+	ps[m[4]]++
 	if m[4][0] == '4' || m[4][0] == '5' {
 		b.Bad[ts.Minute()/10]++
 		b.IPBad[ip]++
@@ -606,6 +635,16 @@ func (c *Collector) saveLocked() {
 	c.bucket.IPs = topN(c.bucket.IPs, maxIPsPerHour)
 	c.bucket.IPBad = topN(c.bucket.IPBad, maxIPsPerHour)
 	c.bucket.Paths = topN(c.bucket.Paths, maxPathsPerHour)
+	// 按状态码筛选用的明细跟随 Paths 一起裁剪，避免低排名路径的状态分布无限堆积
+	if len(c.bucket.PathStatus) > 0 {
+		ps := make(map[string]map[string]int, len(c.bucket.Paths))
+		for p, m := range c.bucket.PathStatus {
+			if _, ok := c.bucket.Paths[p]; ok && len(m) > 0 {
+				ps[p] = m
+			}
+		}
+		c.bucket.PathStatus = ps
+	}
 	c.savePathIPsLocked()
 	raw, err := json.Marshal(c.bucket)
 	if err != nil {
@@ -644,6 +683,9 @@ func (c *Collector) loadHour(hour int64) *hourBucket {
 	}
 	if b.Statuses == nil {
 		b.Statuses = map[string]int{}
+	}
+	if b.PathStatus == nil {
+		b.PathStatus = map[string]map[string]int{}
 	}
 	b.Hour = hour
 	return &b
@@ -887,6 +929,46 @@ func (c *Collector) PathSources(path, rangeKey string, n int) SourceQuery {
 		Partial: partial,
 		IPs:     topIPs(counts, n),
 	}
+}
+
+// PathsByStatus 返回指定窗口内某个状态码对应的访问路径 Top N，
+// 用于「被访问路径」面板按状态码细分结果（明细只保留最近 RetentionDays 天）。
+func (c *Collector) PathsByStatus(status, rangeKey string, n int) StatusPathQuery {
+	now := time.Now()
+	from := rangeFrom(rangeKey, now)
+	if n <= 0 {
+		n = 10
+	}
+	c.mu.Lock()
+	curHour := c.hour
+	var cur *hourBucket
+	if c.bucket != nil {
+		cur = c.bucket.clone()
+	}
+	c.mu.Unlock()
+
+	paths := map[string]int{}
+	total := 0
+	cache := map[int64]*hourBucket{}
+	for h := from.Truncate(time.Hour).Unix(); h <= now.Truncate(time.Hour).Unix(); h += int64(time.Hour / time.Second) {
+		var b *hourBucket
+		switch {
+		case h == curHour && cur != nil:
+			b = cur
+		case cache[h] != nil:
+			b = cache[h]
+		default:
+			b = c.loadHour(h)
+			cache[h] = b
+		}
+		for p, m := range b.PathStatus {
+			if v := m[status]; v > 0 {
+				paths[p] += v
+				total += v
+			}
+		}
+	}
+	return StatusPathQuery{Status: status, From: from.Unix(), To: now.Unix(), Total: total, Paths: topPaths(paths, n)}
 }
 
 // badOf 统计一个小时内 4xx / 5xx 请求数（由状态码分布推导，兼容旧版聚合文件）

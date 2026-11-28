@@ -63,9 +63,10 @@ func healthParts(m system.Metrics) []healthPart {
 		free := 1 - float64(m.DiskUsedGB)/float64(m.DiskTotalGB)
 		parts = append(parts, healthPart{"磁盘余量", headroom(free, 0.25) * 100, 30})
 	}
-	// CPU：空闲率
+	// CPU：使用率 ≤5% 即得满分，5%~100% 线性降到 0
 	if m.CPUUsagePct >= 0 {
-		parts = append(parts, healthPart{"CPU 空闲", float64(100 - m.CPUUsagePct), 20})
+		idle := 100 - m.CPUUsagePct
+		parts = append(parts, healthPart{"CPU 空闲", clamp01(float64(idle)/95) * 100, 20})
 	}
 	// 负载：每核负载 1.0 记 50 分，2.0 及以上记 0 分
 	if m.LoadAvg1 >= 0 {

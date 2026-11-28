@@ -2,7 +2,7 @@
 
 > 为飞牛 fnOS NAS 打造的一体化安全面板：真实系统指标、防护开关、网络与服务排障、扫描自动封禁、告警推送与操作审计，全部集中在一个页面里。
 
-![version](https://img.shields.io/badge/version-0.1.84-7c5cff?style=flat-square)
+![version](https://img.shields.io/badge/version-0.1.86-7c5cff?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-fnOS%20%2F%20Linux-2ea043?style=flat-square)
 ![go](https://img.shields.io/badge/Go-1.22-00ADD8?style=flat-square&logo=go&logoColor=white)
 ![react](https://img.shields.io/badge/React-18%20%2B%20Vite-61DAFB?style=flat-square&logo=react&logoColor=black)
@@ -93,16 +93,25 @@
 > 完整版本与安装包见 [Releases](https://github.com/IMGZCQ/AT-Field/releases)，最新版本会默认展开。
 
 <details open>
-<summary><b>v0.1.84</b> · 消息推送改为选项卡</summary>
+<summary><b>v0.1.86</b> · 归属地提示精简</summary>
 
-- 设置页「消息推送」改为四个选项卡（飞书 / 企业微信 / 钉钉 / 邮件），一次只显示一个渠道的配置，不再把十几个输入框一次铺开
-- 选项卡标签带状态圆点：已填写为绿色、未填写为灰色；打开设置时自动定位到第一个已配置的渠道
-- 每个选项卡下方新增渠道配置提示（机器人添加路径 / 授权码说明）；移动端四个选项卡等宽一行，390px 下不换行、不溢出
+- 连接 Top 与可疑 IP 明细中的归属地，未查询时只显示「点击查询」，点击立即查询；去掉「未查询，点查看归属查询」之类的冗余提示
 
 </details>
 
 <details>
-<summary><b>历史版本</b> · v0.1.83 及更早（点击展开）</summary>
+<summary><b>历史版本</b> · v0.1.85 及更早（点击展开）</summary>
+
+### v0.1.85 · 被访问路径按状态码筛选
+
+- 「被访问路径 Top」的状态码分布改为可点击筛选：「全部」默认选中，点击某个状态码只显示该状态码对应的路径（Top 10）与总次数，再点一次回到全部
+- 切换时限自动回到「全部」；筛选时面板高度保持不变，状态码区不再上下跳动；移动端胶囊加大点击区域
+
+### v0.1.84 · 消息推送改为选项卡
+
+- 设置页「消息推送」改为四个选项卡（飞书 / 企业微信 / 钉钉 / 邮件），一次只显示一个渠道的配置，不再把十几个输入框一次铺开
+- 选项卡标签带状态圆点：已填写为绿色、未填写为灰色；打开设置时自动定位到第一个已配置的渠道
+- 每个选项卡下方新增渠道配置提示（机器人添加路径 / 授权码说明）；移动端四个选项卡等宽一行，390px 下不换行、不溢出
 
 ### v0.1.83 · 新增邮件推送
 
